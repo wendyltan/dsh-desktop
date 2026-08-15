@@ -167,7 +167,7 @@ final class AppStore: NSObject, ObservableObject {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            if let logo = Bundle.main.image(forResource: "dsh-logo") {
+            if let logo = statusBarLogo() {
                 button.image = logo
                 button.imagePosition = .imageLeft
             }
@@ -212,6 +212,20 @@ final class AppStore: NSObject, ObservableObject {
             .foregroundColor: color,
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
         ])
+    }
+
+    /// 菜单栏 Logo：优先用 Harness favicon（SVG，模板图，随菜单栏自动着色），
+    /// 失败则回退 App 图标。
+    private func statusBarLogo() -> NSImage? {
+        if let url = Bundle.main.url(forResource: "dsh-logo", withExtension: "svg"),
+           let logo = NSImage(contentsOf: url) {
+            logo.isTemplate = true
+            logo.size = NSSize(width: 15, height: 15)
+            return logo
+        }
+        let icon = NSApp.applicationIconImage
+        icon.size = NSSize(width: 15, height: 15)
+        return icon
     }
 
     /// 菜单栏「打开客户端面板」：唤起 App 窗口（不自动打开控制中心）。

@@ -26,7 +26,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp bin/DeepSeekHarness "$APP/Contents/MacOS/DeepSeekHarness"
 cp Info.plist "$APP/Contents/Info.plist"
-[ -f "$ROOT/Resources/dsh-logo.png" ] && cp "$ROOT/Resources/dsh-logo.png" "$APP/Contents/Resources/dsh-logo.png"
+[ -f "$ROOT/Resources/dsh-logo.svg" ] && cp "$ROOT/Resources/dsh-logo.svg" "$APP/Contents/Resources/dsh-logo.svg"
 
 echo "== 生成图标 =="
 if swift -swift-version 5 Scripts/gen-icon.swift "$ROOT/bin/icon.png" 2>/dev/null; then

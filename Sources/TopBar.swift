@@ -11,7 +11,10 @@ struct TopBar: View {
                 showControlCenter = true
             } label: {
                 Label("控制中心", systemImage: "gauge")
+                    .padding(.horizontal, 6)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(CCTheme.blue)
             .help("钱包 / 插件 / 远程 / 更新 / 服务器（余额状态已移至 macOS 菜单栏）")
 
             Spacer()
@@ -23,8 +26,12 @@ struct TopBar: View {
                     Label("有新版本", systemImage: "arrow.up.circle")
                         .font(.caption)
                         .foregroundColor(.orange)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(Color.orange.opacity(0.13))
+                        .clipShape(Capsule())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .help("检测到新版本 \(store.updateVersion ?? "")，点击查看")
             }
 
@@ -33,7 +40,7 @@ struct TopBar: View {
                 .foregroundColor(.secondary)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .sheet(isPresented: $showControlCenter) { ControlCenterSheet() }
     }
 }
