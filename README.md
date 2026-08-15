@@ -7,18 +7,20 @@
 ## ✨ 功能特性
 
 - **内嵌完整 Harness Web UI** —— 原生 Swift + WKWebView，双击即用，自动拉起/管理 `dsh web` 服务
-- **余额 / 用量管理**
-  - 启动即显示余额，支持自动刷新（默认 5 分钟，可自定义间隔）
-  - 预警阈值：余额低于阈值显示**红色**，否则**绿色**（阈值可设置）
+- **macOS 菜单栏余额状态** —— Harness logo + 余额金额（绿/红按预警阈值），点开菜单可唤起客户端、刷新余额、检查更新
+- **控制中心（卡片式）** —— 一个入口聚合：钱包 / 插件 / 远程 / 更新 / 服务器
+- **钱包 · API 余额**
+  - 自动刷新（默认 5 分钟，可自定义间隔）、预警阈值（低于显示红色）
   - **内嵌官方充值页**（支付宝/微信扫码支付）与**内嵌用量明细页**，不再弹浏览器
 - **插件管理（一体化）**
-  - **插件市场**：npm `dsh-plugin` 插件一键安装/卸载；GitHub `dsh-plugin` 仓库按 **star 降序、每日自动刷新**（Top 100）
+  - **插件市场**：npm `dsh-plugin` 插件一键安装/卸载；**支持输入完整包名精确匹配**（未打关键词的插件也能找到）；GitHub `dsh-plugin` 仓库按 **star 降序、每日自动刷新**（Top 100）
   - **我的插件**：已装插件扫描（核心/已加载/自定义/已禁用）、启停、卸载
   - **创建插件向导**：空骨架 / 工具 / 定时任务 / 简单服务 四种模板，生成**本地持久插件**并热挂载
   - 简介自动翻译成中文并分类（调用 DeepSeek API，带磁盘缓存）
+  - 安装前自动处理 pnpm 构建许可（node-pty/protobufjs 等原生依赖不再被拦截）
 - **Tailscale 远程访问开关** —— 一键把 Harness Web UI 以 HTTPS 暴露给你的 tailnet，手机浏览器直接操作
 - **自动更新检查** —— 启动 + 每 6 小时对比 npm 上的 Harness 引擎版本，有新版本提示
-- **服务器管理** —— 自动拉起、重启、停止、浏览器打开、日志
+- **服务器管理** —— 自动拉起、重启、停止、日志
 - **`dshctl` 命令行工具** —— 无 GUI 管理同一套能力
 
 ## 📸 截图
@@ -68,28 +70,36 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 
 ## 🚀 使用说明
 
-### 顶部工具栏（从左到右）
+### macOS 菜单栏（余额状态）
 
-| 按钮 | 功能 |
+- 菜单栏常驻 **Harness logo + 余额金额**（如 `¥52.45`；低于预警阈值变**红色**，否则绿色），随自动刷新与阈值设置实时更新
+- 点击图标展开菜单：**打开客户端面板**（唤起主窗口）/ 刷新余额 / 检查更新 / 退出
+
+### 客户端顶栏
+
+| 元素 | 功能 |
 |---|---|
-| **余额** | 显示当前余额（绿/红按预警阈值）；点击打开余额面板 |
-| **插件管理** | 打开一体化插件页：`插件市场` / `我的插件` 两个分页 |
-| **刷新页面** | 重新加载内嵌的 Harness 网页（等同浏览器刷新，不影响服务） |
-| **浏览器打开** | 在默认浏览器中打开 Harness Web UI |
-| **远程** | Tailscale 远程访问开关（绿=开 / 红=关） |
+| **控制中心**（蓝色主按钮） | 打开控制中心卡片面板 |
+| **有新版本**（橙色胶囊） | 有 Harness 引擎更新时显示，点击查看 |
 | 状态文字 | 服务状态（运行中/已停止）+「远程开」等 |
 
-### 余额面板
+### 控制中心（卡片式）
 
-- 查看余额明细（币种 / 当前余额 / 赠金 / 充值 / 已用）
-- **去充值**：客户端内嵌官方充值页（首次需在窗口内登录一次，之后记住）
-- **用量明细**：客户端内嵌官方用量页（与充值页共用登录态）
-- **余额管理**：自动刷新间隔（30 秒 ~ 24 小时）、预警阈值（低于则红色）、保存设置
+| 卡片 | 内容 |
+|---|---|
+| **钱包 · API 余额** | 余额明细 + 去充值 / 用量明细 / 重新获取 + 自动刷新间隔 / 预警阈值设置 |
+| **插件** | 已装数量 + 「插件管理」入口（市场/我的插件/创建插件）+ 与网页设置的分工说明 |
+| **Tailscale 远程访问** | 开/关（绿/红）+ 状态 + 开启确认 |
+| **更新** | 客户端 / Harness 引擎版本 + 检查更新 |
+| **服务器** | 状态 + 浏览器打开 / 重启（确认）/ 停止（确认） |
+
+> 分工：**控制中心**管客户端的钱包、插件生命周期、远程、更新与服务；Agent 的模型 / 预设 / 权限等配置在**网页左下角『设置』**里调整。
 
 ### 插件管理
 
 - **插件市场**
-  - `npm 插件`：搜索、一键**安装 / 卸载**（安装 = `pnpm add` + 写入 `dsh.profile.bundles` + 重启服务）
+  - `npm 插件`：搜索、一键**安装 / 卸载**（安装 = 预写 pnpm 构建许可 + `pnpm add` + 写入 `dsh.profile.bundles` + 重启服务）
+  - **搜索框支持输入完整 npm 包名做精确匹配**——未打 `dsh-plugin` 关键词的插件（如 `dsh-better-sidebar`）也能直接找到并安装
   - `GitHub 仓库`：按 star 降序、每日自动刷新（Top 100），点「打开仓库」跳转浏览
   - 简介自动翻译为中文并带分类筛选
 - **我的插件**
@@ -103,15 +113,15 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 
 ### 服务器菜单（菜单栏 → 服务器）
 
-在浏览器中打开 / 刷新页面 / **检查更新…** / 重启服务 / 停止服务
+在浏览器中打开 / **刷新页面（⌘R）** / 检查更新… / 重启服务 / 停止服务
 
 ### Tailscale 远程访问
 
 1. Mac 和手机都安装并登录 [Tailscale](https://tailscale.com)
 2. **首次使用**：打开 Tailscale 控制台（客户端会给出链接）启用 **Serve / HTTPS**
-3. 客户端点「远程」（绿），自动完成：带 `--trusted-host <ts.net域名>` 重启服务 → `tailscale serve` 暴露 :3080
+3. 控制中心「远程」卡点「开启远程」（绿），自动完成：带 `--trusted-host <ts.net域名>` 重启服务 → `tailscale serve` 暴露 :3080
 4. 手机浏览器打开 `https://<你的mac>.<tailnet>.ts.net`（Safari 可「添加到主屏幕」当 App 用）
-5. 再点一次「远程」即关闭（不重启服务）
+5. 再点一次「关闭远程」即关闭（不重启服务）
 
 > 手机浏览器上的界面是桌面版布局，可旋转横屏或 Safari「请求桌面网站」获得更好排版。
 
@@ -148,14 +158,16 @@ dshctl log                    查看服务日志
 ~/.dsh/dsh-desktop/
 ├── Sources/                # Swift 源码（GUI + dshctl 共用服务层）
 │   ├── App.swift  AppStore.swift  WebView.swift  TopBar.swift
-│   ├── PluginSheets.swift  PluginService.swift        # 我的插件 + 创建向导
-│   ├── LocalizeService.swift                          # 插件简介中文化/分类
+│   ├── ControlCenter.swift                              # 控制中心（卡片面板）
+│   ├── PluginSheets.swift  PluginService.swift          # 我的插件 + 创建向导
+│   ├── LocalizeService.swift                            # 插件简介中文化/分类
 │   ├── RemoteService.swift  UpdateChecker.swift  AppSettings.swift
-│   ├── dshctl.swift                                   # CLI
+│   ├── dshctl.swift                                     # CLI
 │   └── Models / Utils / ServerManager / BalanceService / MarketplaceService
 ├── Scripts/
-│   ├── patchctl.mjs                                   # cordis.patch.yml 维护（本地插件挂载）
+│   ├── patchctl.mjs                                     # cordis.patch.yml 维护（本地插件挂载）
 │   └── gen-icon.swift / diag.swift（开发辅助）
+├── Resources/dsh-logo.svg   # 菜单栏 Harness logo
 ├── launch.sh / stop.sh      # Harness 服务启停（幂等，支持 trusted-host）
 ├── tailscale-serve.sh       # 远程访问脚本（App 内开关的 CLI 版）
 ├── build.sh                 # 一键编译 + 打包 + 签名 + 安装到 /Applications
@@ -171,21 +183,27 @@ swiftc -swift-version 5 Sources/*.swift -o /tmp/test  # 手动编译调试
 ```
 
 - 本地持久插件机制：`plugins/<name>/index.js`（ESM，导出 `apply/inject/name`）+ `cordis.patch.yml` 条目 `{ id, name: ./plugins/<name>/index.js }`，**热更新即生效**，无需重新编译 harness
-- 插件市场数据：npm（`keywords:dsh-plugin`）+ GitHub（`topic:dsh-plugin`，按 star 每日缓存）
+- 插件市场数据：npm（`keywords:dsh-plugin` + 精确包名查询）+ GitHub（`topic:dsh-plugin`，按 star 每日缓存）
 
 ## ❓ FAQ
 
 **Q：打开 App 后页面空白 / 没有「新会话」等界面？**
-A：等几秒让服务就绪，点「刷新页面」；仍不行查看 `~/.dsh/logs/dsh-web.log`，或菜单「服务器 → 重启服务」。
+A：等几秒让服务就绪，按 **⌘R**（或菜单「服务器 → 刷新页面」）；仍不行查看 `~/.dsh/logs/dsh-web.log`，或菜单「服务器 → 重启服务」。
+
+**Q：菜单栏没有余额显示？**
+A：App 启动后会创建菜单栏状态项；若被其他状态项遮挡，可拖动菜单栏图标调整位置；仍没有请确认 App 已重启。
 
 **Q：怎么在客户端里传图片？**
 A：Harness 网页界面支持把**图片**拖拽/粘贴到窗口（仅图片，且 DeepSeek 官方 API 为纯文本模型，`deepseek-official` 适配器会拒绝图片内容；如需处理图片，请先本地 OCR/提取文字再发给 Agent）。
+
+**Q：插件市场搜不到某个插件（如 dsh-better-sidebar）？**
+A：在 npm 插件页搜索框**输入完整包名**做精确匹配——未打 `dsh-plugin` 关键词的插件默认不在关键词列表里，但精确查询能直接找到。
 
 **Q：安装/卸载插件会怎样？**
 A：npm 插件的安装/卸载/启停需要**重启服务**，会结束当前会话；本地自定义插件则热更新、不影响会话。
 
 **Q：首次「远程」提示需要在 Tailscale 控制台启用？**
-A：这是 Tailscale 的一次性设置，点弹窗链接登录控制台启用 Serve/HTTPS 后，再点一次「远程」即可。
+A：这是 Tailscale 的一次性设置，点弹窗链接登录控制台启用 Serve/HTTPS 后，再点一次「开启远程」即可。
 
 **Q：Mac 上「应用程序」里搜不到 App？**
 A：App 安装在内置 `/Applications`（真实 App，非符号链接），Spotlight/Launchpad/Finder 均可搜到；若未出现，重启 Dock 或注销重登。
