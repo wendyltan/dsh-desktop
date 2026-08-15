@@ -223,9 +223,11 @@ final class AppStore: NSObject, ObservableObject {
             logo.size = NSSize(width: 15, height: 15)
             return logo
         }
-        let icon = NSApp.applicationIconImage
-        icon.size = NSSize(width: 15, height: 15)
-        return icon
+        if let icon = NSApp.applicationIconImage {
+            icon.size = NSSize(width: 15, height: 15)
+            return icon
+        }
+        return nil
     }
 
     /// 菜单栏「打开客户端面板」：唤起 App 窗口（不自动打开控制中心）。
