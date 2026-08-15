@@ -166,7 +166,7 @@ dshctl log                    查看服务日志
 │   └── Models / Utils / ServerManager / BalanceService / MarketplaceService
 ├── Scripts/
 │   ├── patchctl.mjs                                     # cordis.patch.yml 维护（本地插件挂载）
-│   └── gen-icon.swift / diag.swift（开发辅助）
+│   └── gen-icon.swift（开发辅助）
 ├── Resources/dsh-logo.svg   # 菜单栏 Harness logo
 ├── launch.sh / stop.sh      # Harness 服务启停（幂等，支持 trusted-host）
 ├── tailscale-serve.sh       # 远程访问脚本（App 内开关的 CLI 版）
