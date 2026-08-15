@@ -35,9 +35,6 @@ struct TopBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .sheet(isPresented: $showControlCenter) { ControlCenterSheet() }
-        .onChange(of: store.controlCenterOpenTick) {
-            if store.controlCenterOpenTick > 0 { showControlCenter = true }
-        }
     }
 }
 

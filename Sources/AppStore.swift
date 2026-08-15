@@ -160,18 +160,22 @@ final class AppStore: NSObject, ObservableObject {
 
     // MARK: - macOS 菜单栏余额状态（status item）
 
-    /// 菜单栏「打开控制中心」请求计数（TopBar 观察后弹出控制中心）。
-    @Published var controlCenterOpenTick = 0
     private var statusItem: NSStatusItem?
 
     /// 创建菜单栏状态项（应用启动时调用一次）。
     func ensureStatusItem() {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.attributedTitle = balanceAttributedTitle()
-        item.button?.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
+        if let button = item.button {
+            if let logo = Bundle.main.image(forResource: "dsh-logo") {
+                button.image = logo
+                button.imagePosition = .imageLeft
+            }
+            button.attributedTitle = balanceAttributedTitle()
+            button.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
+        }
         let menu = NSMenu()
-        let open = NSMenuItem(title: "打开控制中心", action: #selector(menuOpenControlCenter), keyEquivalent: "")
+        let open = NSMenuItem(title: "打开客户端面板", action: #selector(menuShowClientPanel), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
         let refresh = NSMenuItem(title: "刷新余额", action: #selector(menuRefreshBalance), keyEquivalent: "")
@@ -210,9 +214,12 @@ final class AppStore: NSObject, ObservableObject {
         ])
     }
 
-    @objc private func menuOpenControlCenter() {
+    /// 菜单栏「打开客户端面板」：唤起 App 窗口（不自动打开控制中心）。
+    @objc private func menuShowClientPanel() {
         NSApp.activate(ignoringOtherApps: true)
-        controlCenterOpenTick += 1
+        for w in NSApp.windows where w.canBecomeMain {
+            w.makeKeyAndOrderFront(nil)
+        }
     }
     @objc private func menuRefreshBalance() { refreshBalance() }
     @objc private func menuCheckUpdate() { checkUpdate(force: true) }

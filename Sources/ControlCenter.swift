@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+/// 控制中心配色：DeepSeek 品牌蓝作为强调色。
+enum CCTheme {
+    static let blue = Color(red: 0.30, green: 0.42, blue: 0.99)
+}
+
 /// 控制中心：钱包 / 插件 / 远程 / 更新 / 服务器 的卡片式聚合面板。
 /// 与网页原生「设置」的分工：这里管客户端的钱包、插件生命周期、远程、更新与服务；
 /// Agent 的模型 / 预设 / 权限等配置在网页『设置』里。
@@ -11,33 +16,36 @@ struct ControlCenterSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("控制中心", systemImage: "gauge").font(.title2.bold())
+                Label("控制中心", systemImage: "gauge")
+                    .font(.system(size: 17, weight: .semibold))
                 Spacer()
                 Button("关闭") { dismiss() }
             }
-            .padding(12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
 
             Text("管理客户端的钱包、插件生命周期、远程访问、更新与服务；Agent 的模型 / 预设 / 权限等配置请在网页『设置』中调整。")
                 .font(.footnote)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
 
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 14) {
                     BalanceCard()
                     PluginsCard()
                     RemoteCard()
                     UpdateCard()
                     ServerCard()
                 }
-                .padding(12)
+                .padding(14)
             }
         }
-        .frame(minWidth: 580, minHeight: 700)
+        .frame(minWidth: 640, minHeight: 700)
+        .tint(CCTheme.blue)
         .onAppear {
             store.loadInstalled()
             store.refreshRemoteState()
@@ -46,7 +54,7 @@ struct ControlCenterSheet: View {
     }
 }
 
-/// 卡片通用容器。
+/// 卡片通用容器：controlBackground 材质 + 细描边 + 连续圆角，贴近系统设置质感。
 struct CCCard<Content: View>: View {
     let title: String
     let icon: String
@@ -54,13 +62,21 @@ struct CCCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon).font(.headline)
+            Label(title, systemImage: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.secondary)
             content
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.gray.opacity(0.07))
-        .cornerRadius(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 }
 
