@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum MarketTab: String, CaseIterable, Identifiable {
     case npm = "npm 插件"
@@ -6,7 +7,7 @@ enum MarketTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-final class AppStore: ObservableObject {
+final class AppStore: NSObject, ObservableObject {
     @Published var serverStatus = "…"
     @Published var reloadToken = 0
 
@@ -129,6 +130,7 @@ final class AppStore: ObservableObject {
                 self.balanceLoading = false
                 self.balance = info
                 self.balanceError = err
+                self.updateStatusItemBalance()
             }
         }
     }
@@ -153,7 +155,68 @@ final class AppStore: ObservableObject {
         settings.balanceWarningThreshold = threshold
         settings.save()
         restartBalanceTimer()
+        updateStatusItemBalance()
     }
+
+    // MARK: - macOS 菜单栏余额状态（status item）
+
+    /// 菜单栏「打开控制中心」请求计数（TopBar 观察后弹出控制中心）。
+    @Published var controlCenterOpenTick = 0
+    private var statusItem: NSStatusItem?
+
+    /// 创建菜单栏状态项（应用启动时调用一次）。
+    func ensureStatusItem() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.attributedTitle = balanceAttributedTitle()
+        item.button?.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
+        let menu = NSMenu()
+        let open = NSMenuItem(title: "打开控制中心", action: #selector(menuOpenControlCenter), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
+        let refresh = NSMenuItem(title: "刷新余额", action: #selector(menuRefreshBalance), keyEquivalent: "")
+        refresh.target = self
+        menu.addItem(refresh)
+        let check = NSMenuItem(title: "检查更新", action: #selector(menuCheckUpdate), keyEquivalent: "")
+        check.target = self
+        menu.addItem(check)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出 DeepSeek Harness", action: #selector(menuQuit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        item.menu = menu
+        statusItem = item
+    }
+
+    /// 刷新菜单栏余额文字与颜色（绿/红按阈值）。
+    func updateStatusItemBalance() {
+        guard let button = statusItem?.button else { return }
+        button.attributedTitle = balanceAttributedTitle()
+    }
+
+    private func balanceAttributedTitle() -> NSAttributedString {
+        let text: String
+        if let b = balance?.balanceInfos.first {
+            text = "¥\(b.totalBalance)"
+        } else if balanceError != nil {
+            text = "余额获取失败"
+        } else {
+            text = "余额 ··"
+        }
+        let color: NSColor = balanceLow ? .systemRed : .systemGreen
+        return NSAttributedString(string: text, attributes: [
+            .foregroundColor: color,
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+        ])
+    }
+
+    @objc private func menuOpenControlCenter() {
+        NSApp.activate(ignoringOtherApps: true)
+        controlCenterOpenTick += 1
+    }
+    @objc private func menuRefreshBalance() { refreshBalance() }
+    @objc private func menuCheckUpdate() { checkUpdate(force: true) }
+    @objc private func menuQuit() { NSApp.terminate(nil) }
 
     func loadMarketplace(force: Bool = false) {
         marketLoading = true

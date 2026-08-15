@@ -10,42 +10,11 @@ struct TopBar: View {
             Button {
                 showControlCenter = true
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: store.balanceLow ? "exclamationmark.triangle.fill" : "dollarsign.circle.fill")
-                        .foregroundColor(store.balanceColor)
-                    if store.balanceLoading {
-                        ProgressView().controlSize(.small)
-                    } else if let b = store.balance?.balanceInfos.first {
-                        Text("余额 \(b.currency) \(b.totalBalance)")
-                            .foregroundColor(store.balanceColor)
-                            .fontWeight(store.balanceLow ? .semibold : .regular)
-                    } else if store.balanceError != nil {
-                        Text("余额获取失败").foregroundColor(.red)
-                    } else {
-                        Text("余额 ··")
-                    }
-                }
-            }
-            .buttonStyle(.borderless)
-            .help(store.balanceLow
-                  ? "⚠️ 余额低于预警阈值 ¥\(String(format: "%.0f", store.settings.balanceWarningThreshold))，点击打开控制中心"
-                  : "余额状态；点击打开控制中心")
-
-            Spacer()
-
-            Button {
-                showControlCenter = true
-            } label: {
                 Label("控制中心", systemImage: "gauge")
             }
-            .help("钱包 / 插件 / 远程 / 更新 / 服务器")
+            .help("钱包 / 插件 / 远程 / 更新 / 服务器（余额状态已移至 macOS 菜单栏）")
 
-            Button {
-                store.reloadWebView()
-            } label: {
-                Label("刷新页面", systemImage: "arrow.clockwise")
-            }
-            .help("重新加载内嵌的 Harness 网页（等同浏览器刷新，不影响服务）")
+            Spacer()
 
             if store.updateAvailable {
                 Button {
@@ -66,6 +35,9 @@ struct TopBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .sheet(isPresented: $showControlCenter) { ControlCenterSheet() }
+        .onChange(of: store.controlCenterOpenTick) {
+            if store.controlCenterOpenTick > 0 { showControlCenter = true }
+        }
     }
 }
 

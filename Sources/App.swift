@@ -15,6 +15,7 @@ struct DeepSeekHarnessApp: App {
                     store.refreshRemoteState()
                     store.startBalanceAutoRefresh()
                     store.startUpdateAutoCheck()
+                    store.ensureStatusItem()
                 }
         }
         .commands {
@@ -24,6 +25,7 @@ struct DeepSeekHarnessApp: App {
                     NSWorkspace.shared.open(URL(string: ServerManager.url)!)
                 }
                 Button("刷新页面") { store.reloadWebView() }
+                    .keyboardShortcut("r", modifiers: .command)
                 Divider()
                 Button("检查更新…") { store.checkUpdate(force: true) }
                 Divider()
