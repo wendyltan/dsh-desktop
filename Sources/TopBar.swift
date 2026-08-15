@@ -47,13 +47,6 @@ struct TopBar: View {
             }
             .help("重新加载内嵌的 Harness 网页（等同浏览器刷新，不影响服务）")
 
-            Button {
-                NSWorkspace.shared.open(URL(string: ServerManager.url)!)
-            } label: {
-                Label("浏览器打开", systemImage: "safari")
-            }
-            .help("在默认浏览器中打开")
-
             if store.updateAvailable {
                 Button {
                     store.showUpdateAlert = true

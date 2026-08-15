@@ -13,12 +13,6 @@ struct ControlCenterSheet: View {
             HStack {
                 Label("控制中心", systemImage: "gauge").font(.title2.bold())
                 Spacer()
-                Button {
-                    store.openWebSettings()
-                } label: {
-                    Label("打开网页设置", systemImage: "gearshape.2")
-                }
-                .help("打开 Harness 网页『设置』（模型 / Agent 预设 / 权限 / 已装插件参数）")
                 Button("关闭") { dismiss() }
             }
             .padding(12)

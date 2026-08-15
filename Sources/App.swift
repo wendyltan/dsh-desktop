@@ -41,8 +41,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             TopBar()
             Divider()
-            WebView(url: URL(string: ServerManager.url)!, reloadToken: store.reloadToken,
-                    onReady: { store.webView = $0 })
+            WebView(url: URL(string: ServerManager.url)!, reloadToken: store.reloadToken)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .alert("更新检查", isPresented: $store.showUpdateAlert) {

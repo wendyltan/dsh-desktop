@@ -6,7 +6,6 @@ import AppKit
 struct WebView: NSViewRepresentable {
     let url: URL
     let reloadToken: Int
-    var onReady: ((WKWebView) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -18,7 +17,6 @@ struct WebView: NSViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.load(URLRequest(url: url))
         context.coordinator.lastReloadToken = reloadToken
-        onReady?(webView)
         return webView
     }
 
