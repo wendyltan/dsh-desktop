@@ -47,4 +47,5 @@ struct Plugin: Identifiable {
     var installed: Bool
     var summaryZh: String? = nil   // 中文翻译（懒加载补全）
     var category: String = "其他"  // 分类
+    var exact: Bool = false        // 是否为精确名称匹配结果（非关键词列表）
 }

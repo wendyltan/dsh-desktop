@@ -165,7 +165,78 @@ enum MarketplaceService {
         }
     }
 
+    // MARK: - 安装 / 卸载
+
+    /// pnpm 11 strict-dep-builds：安装前确保 profile 的 pnpm-workspace.yaml
+    /// 放行 node-pty / protobufjs 的原生构建脚本（幂等，与官方 DSH 插件脚本一致）。
+    static func ensurePnpmBuildPermissions() {
+        ensurePnpmBuildPermissions(at: "\(profileDir)/pnpm-workspace.yaml")
+    }
+
+    static func ensurePnpmBuildPermissions(at path: String) {
+        guard FileManager.default.fileExists(atPath: path),
+              var text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        let before = text
+        // 归一化已有条目（无论原来 true/false 都置为 true）
+        text = text.replacingOccurrences(of: #"(?m)^(\s*)(node-pty|protobufjs):.*$"#,
+                                         with: "$1$2: true",
+                                         options: .regularExpression)
+        if text.range(of: #"(?m)^\s*allowBuilds:\s*$"#, options: .regularExpression) == nil {
+            text += "\nallowBuilds:\n  node-pty: true\n  protobufjs: true\n"
+        } else {
+            for key in ["node-pty", "protobufjs"] {
+                let pattern = "(?m)^\\s*\(key):\\s*true\\s*$"
+                if text.range(of: pattern, options: .regularExpression) == nil {
+                    text = text.replacingOccurrences(of: #"(?m)^(\s*allowBuilds:\s*)$"#,
+                                                     with: "$1\n  \(key): true",
+                                                     options: .regularExpression)
+                }
+            }
+        }
+        if text != before {
+            try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// 精确按 npm 包名查询（用于市场关键词搜不到但确实存在的插件）。
+    /// 只有带 DSH 相关信号（dsh 字段 / keywords / 描述提到 dsh|deepseek）才返回，避免误装无关包。
+    static func searchNPMExact(_ name: String) -> [Plugin]? {
+        let q = name.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return nil }
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~@")
+        guard let encoded = q.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        let (json, _) = httpGetJSON("https://registry.npmjs.org/\(encoded)",
+                                    headers: ["Accept": "application/json"])
+        guard let json = json as? [String: Any], let pkgName = json["name"] as? String else { return nil }
+
+        let keywords = (json["keywords"] as? [String]) ?? []
+        let desc = (json["description"] as? String) ?? ""
+        let hasSignal = json["dsh"] is [String: Any]
+            || keywords.contains { $0.lowercased().contains("dsh") || $0.lowercased().contains("deepseek") }
+            || desc.lowercased().contains("dsh") || desc.lowercased().contains("deepseek")
+        guard hasSignal else { return nil }
+
+        let installed = installedPackages()
+        let latest = (json["dist-tags"] as? [String: Any])?["latest"] as? String
+        let version = latest ?? (json["version"] as? String)
+        let links = json["links"] as? [String: Any] ?? [:]
+        var plugin = Plugin(
+            packageName: pkgName,
+            displayName: pkgName,
+            summary: desc,
+            version: version,
+            source: "npm",
+            link: (links["npm"] as? String) ?? "https://www.npmjs.com/package/\(pkgName)",
+            stars: nil,
+            author: nil,
+            installed: installed.contains(pkgName))
+        plugin.exact = true
+        return [plugin]
+    }
+
     static func install(_ packageName: String) -> (Bool, String) {
+        ensurePnpmBuildPermissions()
         let add = zsh("cd \(shellQuote(profileDir)) && pnpm add \(shellQuote(packageName))")
         if !add.ok {
             return (false, "pnpm add 失败 (exit \(add.exitCode)): \(add.stderr.suffix(400))")

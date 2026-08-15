@@ -53,6 +53,20 @@ struct DSHCtl {
             let (ok, msg) = PluginService.deleteLocal(args[1])
             print(ok ? "OK: \(msg)" : "ERROR: \(msg)")
             exit(ok ? 0 : 1)
+        case "npm-exact":   // npm-exact <包名>
+            guard args.count >= 2 else { print("usage: dshctl npm-exact <package-name>"); exit(2) }
+            if let ps = MarketplaceService.searchNPMExact(args[1]) {
+                for p in ps {
+                    print("\(p.exact ? "[精确] " : "")\(p.packageName)@\(p.version ?? "") \(p.summary.prefix(60))")
+                }
+            } else {
+                print("未找到，或该包不是 DSH 相关插件")
+                exit(1)
+            }
+        case "ws-ensure":   // ws-ensure <pnpm-workspace.yaml 路径>
+            guard args.count >= 2 else { print("usage: dshctl ws-ensure <path>"); exit(2) }
+            MarketplaceService.ensurePnpmBuildPermissions(at: args[1])
+            if let t = try? String(contentsOfFile: args[1], encoding: .utf8) { print(t) }
         case "plugins":
             let sub = args.count > 1 ? args[1] : "npm"
             let list = sub == "github" ? MarketplaceService.searchGitHub() : MarketplaceService.searchNPM()

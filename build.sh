@@ -13,6 +13,7 @@ swiftc -swift-version 5 \
 echo "== 编译 GUI =="
 swiftc -swift-version 5 \
   Sources/App.swift Sources/AppStore.swift Sources/WebView.swift Sources/TopBar.swift Sources/PluginSheets.swift \
+  Sources/ControlCenter.swift \
   Sources/Models.swift Sources/Utils.swift Sources/ServerManager.swift \
   Sources/BalanceService.swift Sources/MarketplaceService.swift Sources/LocalizeService.swift \
   Sources/PluginService.swift Sources/RemoteService.swift Sources/AppSettings.swift \

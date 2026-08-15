@@ -3,16 +3,12 @@ import AppKit
 
 struct TopBar: View {
     @EnvironmentObject var store: AppStore
-    @State private var showBalance = false
-    @State private var showPlugins = false
-    @State private var confirmEnableRemote = false
-    @State private var showRemoteAlert = false
+    @State private var showControlCenter = false
 
     var body: some View {
         HStack(spacing: 12) {
             Button {
-                store.refreshBalance()
-                showBalance = true
+                showControlCenter = true
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: store.balanceLow ? "exclamationmark.triangle.fill" : "dollarsign.circle.fill")
@@ -32,17 +28,17 @@ struct TopBar: View {
             }
             .buttonStyle(.borderless)
             .help(store.balanceLow
-                  ? "⚠️ 余额低于预警阈值 ¥\(String(format: "%.0f", store.settings.balanceWarningThreshold))，点击查看详情与设置"
-                  : "查看 DeepSeek API 余额 / 用量（点击可设置刷新间隔与预警阈值）")
+                  ? "⚠️ 余额低于预警阈值 ¥\(String(format: "%.0f", store.settings.balanceWarningThreshold))，点击打开控制中心"
+                  : "余额状态；点击打开控制中心")
 
             Spacer()
 
             Button {
-                showPlugins = true
+                showControlCenter = true
             } label: {
-                Label("插件管理", systemImage: "puzzlepiece.extension")
+                Label("控制中心", systemImage: "gauge")
             }
-            .help("插件市场 / 我的插件 / 创建插件")
+            .help("钱包 / 插件 / 远程 / 更新 / 服务器")
 
             Button {
                 store.reloadWebView()
@@ -57,21 +53,6 @@ struct TopBar: View {
                 Label("浏览器打开", systemImage: "safari")
             }
             .help("在默认浏览器中打开")
-
-            Button {
-                if store.remoteEnabled {
-                    store.disableRemote()
-                } else {
-                    confirmEnableRemote = true
-                }
-            } label: {
-                Label("远程", systemImage: store.remoteEnabled
-                      ? "antenna.radiowaves.left.and.right"
-                      : "antenna.radiowaves.left.and.right.slash")
-                    .foregroundStyle(store.remoteEnabled ? Color.green : Color.red)
-            }
-            .help(store.remoteStatus)
-            .disabled(store.remoteBusy)
 
             if store.updateAvailable {
                 Button {
@@ -91,135 +72,10 @@ struct TopBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .sheet(isPresented: $showBalance) { BalanceSheet() }
-        .sheet(isPresented: $showPlugins) { PluginsSheet() }
-        .confirmationDialog("开启远程访问会重启 Harness 服务（结束当前会话），且需要 Tailscale 已登录。继续？",
-                            isPresented: $confirmEnableRemote, titleVisibility: .visible) {
-            Button("开启（重启服务）") { store.enableRemote() }
-            Button("取消", role: .cancel) {}
-        }
-        .alert("远程访问", isPresented: $showRemoteAlert) {
-            if let link = store.remoteLink() {
-                Button("打开链接") { NSWorkspace.shared.open(URL(string: link)!) }
-            }
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(store.remoteStatus)
-        }
-        .onChange(of: store.remoteStatus) {
-            if store.remoteStatus.contains("https://") { showRemoteAlert = true }
-        }
+        .sheet(isPresented: $showControlCenter) { ControlCenterSheet() }
     }
 }
 
-struct BalanceSheet: View {
-    @EnvironmentObject var store: AppStore
-    @Environment(\.dismiss) var dismiss
-    @State private var refreshSeconds = 300
-    @State private var threshold = 20.0
-    @State private var showRecharge = false
-    @State private var showUsage = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("API 余额 / 用量").font(.title2.bold())
-                Spacer()
-                Button("关闭") { dismiss() }
-            }
-            if store.balanceLoading {
-                ProgressView("加载中…")
-            } else if let err = store.balanceError {
-                Text(err).foregroundColor(.red)
-            } else if let info = store.balance {
-                Text("账户可用：\(info.isAvailable ? "✅ 是" : "❌ 否")")
-                ForEach(info.balanceInfos, id: \.currency) { b in
-                    VStack(alignment: .leading, spacing: 6) {
-                        row("币种", b.currency)
-                        row("当前余额", b.totalBalance)
-                        row("赠金", b.grantedBalance)
-                        row("充值", b.toppedUpBalance)
-                        row("已用（约）", String(format: "%.2f", b.used))
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.gray.opacity(0.08))
-                    .cornerRadius(8)
-                }
-            } else {
-                Text("暂无数据").foregroundColor(.secondary)
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    showRecharge = true
-                } label: {
-                    Label("去充值", systemImage: "creditcard")
-                }
-                .buttonStyle(.borderedProminent)
-                .help("在客户端内打开 DeepSeek 官方充值页（支持支付宝 / 微信扫码支付）")
-
-                Button {
-                    showUsage = true
-                } label: {
-                    Label("用量明细", systemImage: "chart.bar")
-                }
-                .help("在客户端内打开官方用量明细页")
-
-                Spacer()
-                Button("重新获取") { store.refreshBalance() }
-            }
-
-            Divider()
-
-            Text("余额管理").font(.headline)
-            HStack {
-                Text("自动刷新间隔")
-                Spacer()
-                Stepper("\(refreshSeconds) 秒", value: $refreshSeconds, in: 30...86400, step: 30)
-            }
-            HStack {
-                Text("预警阈值（低于则余额显示红色）")
-                Spacer()
-                Stepper("¥ \(threshold, specifier: "%.0f")", value: $threshold, in: 1...500, step: 1)
-            }
-            HStack {
-                Text("当前显示：\(store.balanceLow ? "红色（低于阈值）" : "绿色（正常）")")
-                    .font(.footnote)
-                    .foregroundColor(store.balanceLow ? .red : .green)
-                Spacer()
-                Button("保存设置") {
-                    store.updateBalanceSettings(refreshSeconds: refreshSeconds, threshold: threshold)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(20)
-        .frame(minWidth: 420, minHeight: 500)
-        .sheet(isPresented: $showRecharge) {
-            EmbeddedWebSheet(title: "DeepSeek 官方充值", url: BalanceService.rechargeURL,
-                             hint: "首次使用请先在此登录 DeepSeek 平台账号；支付时用手机扫页面上的二维码即可（支付宝 / 微信）。")
-        }
-        .sheet(isPresented: $showUsage) {
-            EmbeddedWebSheet(title: "DeepSeek 用量明细", url: BalanceService.usageURL,
-                             hint: "首次使用请先在此登录 DeepSeek 平台账号（与充值页共用登录状态）。")
-        }
-        .onAppear {
-            if store.balance == nil { store.refreshBalance() }
-            refreshSeconds = store.settings.balanceRefreshSeconds
-            threshold = store.settings.balanceWarningThreshold
-        }
-    }
-
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).foregroundColor(.secondary)
-            Spacer()
-            Text(value).monospacedDigit()
-        }
-    }
-}
 
 /// 客户端内嵌网页（充值 / 用量明细等 DeepSeek 平台页面，不再弹浏览器）。
 struct EmbeddedWebSheet: View {
@@ -269,9 +125,10 @@ struct MarketBody: View {
                 .frame(width: 250)
                 .onChange(of: store.marketTab) { store.loadMarketplace() }
 
-                TextField("搜索插件", text: $store.searchText)
+                TextField("搜索插件（支持直接输入完整包名）", text: $store.searchText)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
+                    .frame(width: 260)
+                    .onChange(of: store.searchText) { store.searchNPMExactDebounced() }
 
                 Spacer()
                 Button("刷新") { store.loadMarketplace(force: true) }
@@ -322,12 +179,19 @@ struct MarketBody: View {
                 Spacer()
                 ProgressView("加载插件市场…")
                 Spacer()
-            } else if store.plugins.isEmpty {
+            } else if store.marketRows.isEmpty {
                 Spacer()
-                Text("没有找到插件").foregroundColor(.secondary)
+                if store.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text("没有找到插件").foregroundColor(.secondary)
+                } else {
+                    Text("没有匹配结果。npm 页可直接输入**完整包名**（如 dsh-better-sidebar）做精确匹配，支持未打 dsh-plugin 关键词的插件。")
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 30)
+                }
                 Spacer()
             } else {
-                List(store.filteredPlugins) { p in PluginRow(p: p) }
+                List(store.marketRows) { p in PluginRow(p: p) }
             }
         }
     }
@@ -342,6 +206,13 @@ struct PluginRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(p.displayName).font(.headline)
+                    if p.exact {
+                        Text("精确匹配")
+                            .font(.caption2)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Color.blue.opacity(0.2))
+                            .cornerRadius(4)
+                    }
                     if p.installed {
                         Text("已装")
                             .font(.caption2)

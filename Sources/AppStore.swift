@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 enum MarketTab: String, CaseIterable, Identifiable {
     case npm = "npm 插件"
@@ -39,6 +40,38 @@ final class AppStore: ObservableObject {
     @Published var selectedCategory = "全部"
     @Published var githubFetchedAt: Date?
 
+    /// 精确名称匹配的 npm 插件（搜索时置顶显示）。
+    @Published var exactMatches: [Plugin] = []
+    private var exactSearchWork: DispatchWorkItem?
+
+    /// 搜索框输入变化时调用：npm 页对输入做精确包名查询（防抖 0.5s）。
+    func searchNPMExactDebounced() {
+        exactSearchWork?.cancel()
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        guard marketTab == .npm, !q.isEmpty else {
+            exactMatches = []
+            return
+        }
+        let work = DispatchWorkItem {
+            let found = MarketplaceService.searchNPMExact(q) ?? []
+            DispatchQueue.main.async {
+                if self.searchText.trimmingCharacters(in: .whitespaces) == q {
+                    self.exactMatches = found
+                }
+            }
+        }
+        exactSearchWork = work
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    /// 市场展示行：搜索时 = 精确匹配（置顶）+ 关键词列表过滤结果（去重）。
+    var marketRows: [Plugin] {
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { return filteredPlugins }
+        let exactIds = Set(exactMatches.map { $0.id })
+        return exactMatches + filteredPlugins.filter { !exactIds.contains($0.id) }
+    }
+
     /// GitHub 列表更新时间的显示文案。
     var githubFetchedAtText: String {
         guard let d = githubFetchedAt else { return "未知" }
@@ -74,6 +107,39 @@ final class AppStore: ObservableObject {
     func reloadWebView() { reloadToken += 1 }
 
     func refreshServerStatus() { serverStatus = ServerManager.statusText() }
+
+    /// 当前页面的 WKWebView（由 WebView 注入），用于「打开网页设置」等互跳操作。
+    weak var webView: WKWebView?
+
+    /// 打开网页 UI 的「设置」面板（左侧边栏「设置」），带重试。
+    func openWebSettings() {
+        guard let wv = webView else { return }
+        let js = """
+        (function(){
+          var nodes = document.querySelectorAll('button, [role="button"]');
+          for (var i = 0; i < nodes.length; i++) {
+            if ((nodes[i].textContent || '').trim() === '设置') { nodes[i].click(); return true; }
+          }
+          var all = document.querySelectorAll('div, span, a');
+          for (var j = 0; j < all.length; j++) {
+            var e = all[j];
+            if ((e.textContent || '').trim() === '设置' && e.children.length === 0) { e.click(); return true; }
+          }
+          return false;
+        })()
+        """
+        var attempts = 0
+        func attempt() {
+            wv.evaluateJavaScript(js) { result, _ in
+                let ok = (result as? Bool) ?? false
+                if !ok && attempts < 5 {
+                    attempts += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { attempt() }
+                }
+            }
+        }
+        attempt()
+    }
 
     /// 应用启动时调用：若服务未运行则拉起，随后刷新页面；已运行则页面已在 WebView 加载完成。
     func ensureServerRunning() {
