@@ -82,6 +82,7 @@ final class AppStore: NSObject, ObservableObject {
     // MARK: - macOS 菜单栏余额状态（status item）
 
     private var statusItem: NSStatusItem?
+    private var updateMenuItem: NSMenuItem?
 
     /// 创建菜单栏状态项（应用启动时调用一次）。
     func ensureStatusItem() {
@@ -105,6 +106,7 @@ final class AppStore: NSObject, ObservableObject {
         let check = NSMenuItem(title: "检查更新", action: #selector(menuCheckUpdate), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
+        updateMenuItem = check
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 DeepSeek Harness", action: #selector(menuQuit), keyEquivalent: "q")
         quit.target = self
@@ -117,6 +119,16 @@ final class AppStore: NSObject, ObservableObject {
     func updateStatusItemBalance() {
         guard let button = statusItem?.button else { return }
         button.attributedTitle = balanceAttributedTitle()
+    }
+
+    /// 有新版本时，把「检查更新」菜单项改成提示文案。
+    func refreshUpdateMenuItem() {
+        guard let item = updateMenuItem else { return }
+        if updateAvailable, let v = updateVersion {
+            item.title = "🆕 有新版本 \(v)，点击查看"
+        } else {
+            item.title = "检查更新"
+        }
     }
 
     private func balanceAttributedTitle() -> NSAttributedString {
@@ -252,6 +264,7 @@ final class AppStore: NSObject, ObservableObject {
                 self.updateVersion = latest
                 let newer = UpdateChecker.isNewer(latest, than: installed)
                 self.updateAvailable = newer && self.settings.dismissedUpdateVersion != latest
+                self.refreshUpdateMenuItem()
                 self.updateMessage = newer
                     ? "发现新版本：Harness 引擎 \(latest)（当前 \(installed)）\n\n升级方式：在终端运行 ~/.dsh/dsh-desktop/build.sh，或更新 launch.sh 中的版本号后重启服务。"
                     : "已是最新版本（\(installed)）。"
@@ -276,5 +289,6 @@ final class AppStore: NSObject, ObservableObject {
             settings.save()
         }
         updateAvailable = false
+        refreshUpdateMenuItem()
     }
 }

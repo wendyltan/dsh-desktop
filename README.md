@@ -8,14 +8,11 @@
 
 - **内嵌完整 Harness Web UI** —— 原生 Swift + WKWebView，双击即用，自动拉起/管理 `dsh web` 服务
 - **macOS 菜单栏余额状态** —— Harness logo + 余额金额（绿/红按预警阈值），点开菜单可唤起客户端、刷新余额、检查更新
-- **控制中心（卡片式）** —— 一个入口聚合：钱包 / 远程 / 更新 / 服务器
-- **钱包 · API 余额**
-  - 自动刷新（默认 5 分钟，可自定义间隔）、预警阈值（低于显示红色）
-  - **内嵌官方充值页**（支付宝/微信扫码支付）与**内嵌用量明细页**，不再弹浏览器
-- **Tailscale 远程访问开关** —— 一键把 Harness Web UI 以 HTTPS 暴露给你的 tailnet，手机浏览器直接操作
-- **自动更新检查** —— 启动 + 每 6 小时对比 npm 上的 Harness 引擎版本，有新版本提示
-- **服务器管理** —— 自动拉起、重启、停止、日志
+- **菜单栏更新提示** —— 检测到 Harness 引擎新版本时，「检查更新」菜单项变为「🆕 有新版本 vX」
+- **服务器管理（电源键）** —— 自动拉起、菜单栏「服务器」重启/停止
 - **`dshctl` 命令行工具** —— 无 GUI 管理同一套能力
+
+> 钱包余额 / 用量、服务器日志、一键重启、引擎版本、Tailscale 远程开关等**运维能力**已迁至网页插件 [dsh-ops-console](https://github.com/wendyltan/dsh-ops-console)（设置 → 运维控制台），手机经 Tailscale 访问也能用；客户端只保留「电源键 + 菜单栏」这类必须留在原生进程里的能力。
 
 > 插件安装 / 卸载 / 市场请使用 Harness 网页内的插件市场插件（如 [dsh-plugin-marketplace](https://github.com/AwesomeHou/dsh-plugin-marketplace)），客户端不再内置插件管理。
 
@@ -65,26 +62,11 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 ### macOS 菜单栏（余额状态）
 
 - 菜单栏常驻 **Harness logo + 余额金额**（如 `¥52.45`；低于预警阈值变**红色**，否则绿色），随自动刷新与阈值设置实时更新
-- 点击图标展开菜单：**打开客户端面板**（唤起主窗口）/ 刷新余额 / 检查更新 / 退出
+- 点击图标展开菜单：**打开客户端面板**（唤起主窗口）/ 刷新余额 / 检查更新（有新版本时变「🆕 有新版本 vX」）/ 退出
 
-### 客户端顶栏
+### 运维控制台（网页插件）
 
-| 元素 | 功能 |
-|---|---|
-| **控制中心**（蓝色主按钮） | 打开控制中心卡片面板 |
-| **有新版本**（橙色胶囊） | 有 Harness 引擎更新时显示，点击查看 |
-| 状态文字 | 服务状态（运行中/已停止）+「远程开」等 |
-
-### 控制中心（卡片式）
-
-| 卡片 | 内容 |
-|---|---|
-| **钱包 · API 余额** | 余额明细 + 去充值 / 用量明细 / 重新获取 + 自动刷新间隔 / 预警阈值设置 |
-| **Tailscale 远程访问** | 开/关（绿/红）+ 状态 + 开启确认 |
-| **更新** | 客户端 / Harness 引擎版本 + 检查更新 |
-| **服务器** | 状态 + 浏览器打开 / 重启（确认）/ 停止（确认） |
-
-> 分工：**控制中心**管客户端的钱包、远程、更新与服务；Agent 的模型 / 预设 / 权限、插件市场等配置在**网页**里完成。
+原「控制中心」卡片面板与客户端顶栏已移除，钱包 / 远程 / 更新 / 服务器统一迁至网页「设置 → 运维控制台」（[dsh-ops-console](https://github.com/wendyltan/dsh-ops-console) 插件）。客户端只保留「菜单栏余额 + 电源键」这类必须留在原生进程里的能力。
 
 ### 服务器菜单（菜单栏 → 服务器）
 
@@ -93,10 +75,10 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 ### Tailscale 远程访问
 
 1. Mac 和手机都安装并登录 [Tailscale](https://tailscale.com)
-2. **首次使用**：打开 Tailscale 控制台（客户端会给出链接）启用 **Serve / HTTPS**
-3. 控制中心「远程」卡点「开启远程」（绿），自动完成：带 `--trusted-host <ts.net域名>` 重启服务 → `tailscale serve` 暴露 :3080
+2. **首次使用**：打开 Tailscale 控制台启用 **Serve / HTTPS**（网页面板会给出链接）
+3. 网页「设置 → 运维控制台 → 远程访问」点「开启远程」（自动 `tailscale serve --bg 3080`；可信主机已固化在 profile 的 `cordis.patch.yml`）
 4. 手机浏览器打开 `https://<你的mac>.<tailnet>.ts.net`（Safari 可「添加到主屏幕」当 App 用）
-5. 再点一次「关闭远程」即关闭（不重启服务）
+5. 再点「关闭远程」即关闭
 
 > 手机浏览器上的界面是桌面版布局，可旋转横屏或 Safari「请求桌面网站」获得更好排版。
 
@@ -124,8 +106,7 @@ dshctl log                   查看服务日志
 ```
 ~/.dsh/dsh-desktop/
 ├── Sources/                # Swift 源码（GUI + dshctl 共用服务层）
-│   ├── App.swift  AppStore.swift  WebView.swift  TopBar.swift
-│   ├── ControlCenter.swift                              # 控制中心（卡片面板）
+│   ├── App.swift  AppStore.swift  WebView.swift
 │   ├── RemoteService.swift  UpdateChecker.swift  AppSettings.swift
 │   ├── dshctl.swift                                     # CLI
 │   └── Models / Utils / ServerManager / BalanceService
@@ -161,7 +142,7 @@ A：客户端不内置插件管理，请使用 Harness 网页内的插件市场�
 A：Harness 网页界面支持把**图片**拖拽/粘贴到窗口（仅图片，且 DeepSeek 官方 API 为纯文本模型，`deepseek-official` 适配器会拒绝图片内容；如需处理图片，请先本地 OCR/提取文字再发给 Agent）。
 
 **Q：首次「远程」提示需要在 Tailscale 控制台启用？**
-A：这是 Tailscale 的一次性设置，点弹窗链接登录控制台启用 Serve/HTTPS 后，再点一次「开启远程」即可。
+A：这是 Tailscale 的一次性设置，点网页「运维控制台 → 远程访问」里的链接登录控制台启用 Serve/HTTPS 后，再点一次「开启远程」即可。
 
 **Q：Mac 上「应用程序」里搜不到 App？**
 A：App 安装在内置 `/Applications`（真实 App，非符号链接），Spotlight/Launchpad/Finder 均可搜到；若未出现，重启 Dock 或注销重登。

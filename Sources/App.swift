@@ -40,13 +40,9 @@ struct ContentView: View {
     @EnvironmentObject var store: AppStore
 
     var body: some View {
-        VStack(spacing: 0) {
-            TopBar()
-            Divider()
-            WebView(url: URL(string: ServerManager.url)!, reloadToken: store.reloadToken)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .alert("更新检查", isPresented: $store.showUpdateAlert) {
+        WebView(url: URL(string: ServerManager.url)!, reloadToken: store.reloadToken)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .alert("更新检查", isPresented: $store.showUpdateAlert) {
             if store.updateAvailable {
                 Button("打开 npm 页面") {
                     NSWorkspace.shared.open(URL(string: UpdateChecker.npmPage)!)
