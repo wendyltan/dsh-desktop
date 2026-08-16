@@ -1,12 +1,6 @@
 import SwiftUI
 import AppKit
 
-enum MarketTab: String, CaseIterable, Identifiable {
-    case npm = "npm 插件"
-    case github = "GitHub 仓库"
-    var id: String { rawValue }
-}
-
 final class AppStore: NSObject, ObservableObject {
     @Published var serverStatus = "…"
     @Published var reloadToken = 0
@@ -29,79 +23,6 @@ final class AppStore: NSObject, ObservableObject {
         guard let first = balance?.balanceInfos.first,
               let v = Double(first.totalBalance) else { return false }
         return v < settings.balanceWarningThreshold
-    }
-
-    @Published var plugins: [Plugin] = []
-    @Published var marketTab: MarketTab = .npm
-    @Published var marketLoading = false
-    @Published var marketError: String?
-    @Published var searchText = ""
-    @Published var actionMessage: String?
-    @Published var selectedCategory = "全部"
-    @Published var githubFetchedAt: Date?
-
-    /// 精确名称匹配的 npm 插件（搜索时置顶显示）。
-    @Published var exactMatches: [Plugin] = []
-    private var exactSearchWork: DispatchWorkItem?
-
-    /// 搜索框输入变化时调用：npm 页对输入做精确包名查询（防抖 0.5s）。
-    func searchNPMExactDebounced() {
-        exactSearchWork?.cancel()
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        guard marketTab == .npm, !q.isEmpty else {
-            exactMatches = []
-            return
-        }
-        let work = DispatchWorkItem {
-            let found = MarketplaceService.searchNPMExact(q) ?? []
-            DispatchQueue.main.async {
-                if self.searchText.trimmingCharacters(in: .whitespaces) == q {
-                    self.exactMatches = found
-                }
-            }
-        }
-        exactSearchWork = work
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-
-    /// 市场展示行：搜索时 = 精确匹配（置顶）+ 关键词列表过滤结果（去重）。
-    var marketRows: [Plugin] {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        if q.isEmpty { return filteredPlugins }
-        let exactIds = Set(exactMatches.map { $0.id })
-        return exactMatches + filteredPlugins.filter { !exactIds.contains($0.id) }
-    }
-
-    /// GitHub 列表更新时间的显示文案。
-    var githubFetchedAtText: String {
-        guard let d = githubFetchedAt else { return "未知" }
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm"
-        return f.string(from: d)
-    }
-
-    @Published var installedPlugins: [InstalledPlugin] = []
-    @Published var installedLoading = false
-    @Published var pluginMessage: String?
-
-    var filteredPlugins: [Plugin] {
-        var list = plugins
-        if selectedCategory != "全部" {
-            list = list.filter { $0.category == selectedCategory }
-        }
-        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return list }
-        return list.filter {
-            $0.packageName.lowercased().contains(q)
-                || $0.summary.lowercased().contains(q)
-                || ($0.summaryZh ?? "").lowercased().contains(q)
-        }
-    }
-
-    /// 当前结果里出现的分类（按固定顺序，前面加「全部」）。
-    var availableCategories: [String] {
-        let present = Set(plugins.map { $0.category })
-        return ["全部"] + LocalizeService.categories.filter { present.contains($0) }
     }
 
     func reloadWebView() { reloadToken += 1 }
@@ -241,58 +162,9 @@ final class AppStore: NSObject, ObservableObject {
     @objc private func menuCheckUpdate() { checkUpdate(force: true) }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
-    func loadMarketplace(force: Bool = false) {
-        marketLoading = true
-        marketError = nil
-        let tab = marketTab
-        DispatchQueue.global(qos: .userInitiated).async {
-            var list = tab == .npm ? MarketplaceService.searchNPM() : MarketplaceService.searchGitHub(force: force)
-            let fetched = tab == .github ? MarketplaceService.githubCacheFetchedAt() : nil
-            DispatchQueue.main.async {
-                self.marketLoading = false
-                self.plugins = list
-                self.githubFetchedAt = fetched
-            }
-            // 后台批量翻译成中文 + 分类（结果缓存），完成后原地刷新
-            LocalizeService.enrich(&list)
-            DispatchQueue.main.async {
-                if self.marketTab == tab { self.plugins = list }
-            }
-        }
-    }
-
-    func install(_ p: Plugin) {
-        guard !p.installed else { return }
-        actionMessage = "正在安装 \(p.packageName) …"
-        let name = p.packageName
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = MarketplaceService.install(name)
-            DispatchQueue.main.async {
-                self.actionMessage = msg
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-                self.loadMarketplace()
-            }
-        }
-    }
-
-    func uninstall(_ p: Plugin) {
-        guard p.installed else { return }
-        actionMessage = "正在卸载 \(p.packageName) …"
-        let name = p.packageName
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = MarketplaceService.uninstall(name)
-            DispatchQueue.main.async {
-                self.actionMessage = msg
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-                self.loadMarketplace()
-            }
-        }
-    }
+    // MARK: - 服务器
 
     func restartServer() {
-        actionMessage = nil
         DispatchQueue.global(qos: .userInitiated).async {
             _ = ServerManager.restart()
             DispatchQueue.main.async {
@@ -303,83 +175,10 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func stopServer() {
-        actionMessage = nil
         DispatchQueue.global(qos: .userInitiated).async {
             _ = ServerManager.stop()
             DispatchQueue.main.async {
                 self.serverStatus = ServerManager.statusText()
-            }
-        }
-    }
-
-    // MARK: - 我的插件（管理）
-
-    func loadInstalled() {
-        installedLoading = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let list = PluginService.scanInstalled()
-            DispatchQueue.main.async {
-                self.installedLoading = false
-                self.installedPlugins = list
-            }
-        }
-    }
-
-    /// 本地插件启停（热更新，无需重启）。
-    func toggleLocal(_ p: InstalledPlugin) {
-        let (_, msg) = PluginService.setLocalEnabled(p.name, enabled: p.disabled)
-        pluginMessage = msg
-        loadInstalled()
-    }
-
-    /// 删除本地插件（热更新）。
-    func deleteLocal(_ p: InstalledPlugin) {
-        let (_, msg) = PluginService.deleteLocal(p.name)
-        pluginMessage = msg
-        loadInstalled()
-    }
-
-    /// npm 插件启用（加回 bundles，需重启）。
-    func enableNpm(_ p: InstalledPlugin) {
-        let name = p.name
-        pluginMessage = "正在启用 \(name)…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = PluginService.enableNpm(name)
-            DispatchQueue.main.async {
-                self.pluginMessage = msg
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-                self.loadInstalled()
-            }
-        }
-    }
-
-    /// npm 插件禁用（移出 bundles，需重启）。
-    func disableNpm(_ p: InstalledPlugin) {
-        let name = p.name
-        pluginMessage = "正在禁用 \(name)…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = PluginService.disableNpm(name)
-            DispatchQueue.main.async {
-                self.pluginMessage = msg
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-                self.loadInstalled()
-            }
-        }
-    }
-
-    /// npm 插件卸载（pnpm remove + 移出 bundles，需重启）。
-    func uninstallNpm(_ p: InstalledPlugin) {
-        let name = p.name
-        pluginMessage = "正在卸载 \(name)…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = PluginService.uninstallNpm(name)
-            DispatchQueue.main.async {
-                self.pluginMessage = msg
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-                self.loadInstalled()
             }
         }
     }

@@ -1,6 +1,6 @@
 # DeepSeek Harness 桌面客户端 (macOS)
 
-> 一个第三方的原生 macOS 桌面客户端，把 **DeepSeek Harness**（`dsh web`，运行在 `127.0.0.1:3080` 的 Agent 工作台）装进原生窗口，并补上余额管理、插件市场、远程访问等实用能力。
+> 一个第三方的原生 macOS 桌面客户端，把 **DeepSeek Harness**（`dsh web`，运行在 `127.0.0.1:3080` 的 Agent 工作台）装进原生窗口，并补上余额管理、远程访问等实用能力。
 >
 > ⚠️ 本项目是**独立开发的第三方客户端**，与 DeepSeek 官方无隶属关系。
 
@@ -8,20 +8,16 @@
 
 - **内嵌完整 Harness Web UI** —— 原生 Swift + WKWebView，双击即用，自动拉起/管理 `dsh web` 服务
 - **macOS 菜单栏余额状态** —— Harness logo + 余额金额（绿/红按预警阈值），点开菜单可唤起客户端、刷新余额、检查更新
-- **控制中心（卡片式）** —— 一个入口聚合：钱包 / 插件 / 远程 / 更新 / 服务器
+- **控制中心（卡片式）** —— 一个入口聚合：钱包 / 远程 / 更新 / 服务器
 - **钱包 · API 余额**
   - 自动刷新（默认 5 分钟，可自定义间隔）、预警阈值（低于显示红色）
   - **内嵌官方充值页**（支付宝/微信扫码支付）与**内嵌用量明细页**，不再弹浏览器
-- **插件管理（一体化）**
-  - **插件市场**：npm `dsh-plugin` 插件一键安装/卸载；**支持输入完整包名精确匹配**（未打关键词的插件也能找到）；GitHub `dsh-plugin` 仓库按 **star 降序、每日自动刷新**（Top 100）
-  - **我的插件**：已装插件扫描（核心/已加载/自定义/已禁用）、启停、卸载
-  - **创建插件向导**：空骨架 / 工具 / 定时任务 / 简单服务 四种模板，生成**本地持久插件**并热挂载
-  - 简介自动翻译成中文并分类（调用 DeepSeek API，带磁盘缓存）
-  - 安装前自动处理 pnpm 构建许可（node-pty/protobufjs 等原生依赖不再被拦截）
 - **Tailscale 远程访问开关** —— 一键把 Harness Web UI 以 HTTPS 暴露给你的 tailnet，手机浏览器直接操作
 - **自动更新检查** —— 启动 + 每 6 小时对比 npm 上的 Harness 引擎版本，有新版本提示
 - **服务器管理** —— 自动拉起、重启、停止、日志
 - **`dshctl` 命令行工具** —— 无 GUI 管理同一套能力
+
+> 插件安装 / 卸载 / 市场请使用 Harness 网页内的插件市场插件（如 [dsh-plugin-marketplace](https://github.com/AwesomeHou/dsh-plugin-marketplace)），客户端不再内置插件管理。
 
 ## 📸 截图
 
@@ -35,7 +31,6 @@
 |---|---|
 | macOS 13+ | 建议 Apple Silicon（M 系列）；Intel 机器运行 `build.sh` 会自行编译对应架构 |
 | Xcode 命令行工具 | `xcode-select --install`（提供 `swiftc`） |
-| Node.js + npm + pnpm | `npm` 用于本项目的 `yaml` 依赖；`pnpm` 用于插件安装/卸载 |
 | DeepSeek API Key | 用于余额查询、模型对话（在 [platform.deepseek.com](https://platform.deepseek.com) 获取） |
 | Tailscale（可选） | 仅「远程访问」功能需要 |
 
@@ -45,11 +40,8 @@
 # 1. 克隆到约定的安装路径（代码中以此为基准）
 git clone https://github.com/wendyltan/dsh-desktop.git ~/.dsh/dsh-desktop
 
-# 2. 安装 patchctl 依赖（yaml，用于本地插件挂载）
-cd ~/.dsh/dsh-desktop && npm install
-
-# 3. 编译 + 签名 + 安装到 /Applications
-./build.sh
+# 2. 编译 + 签名 + 安装到 /Applications
+cd ~/.dsh/dsh-desktop && ./build.sh
 ```
 
 ### 配置 API Key
@@ -88,28 +80,11 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 | 卡片 | 内容 |
 |---|---|
 | **钱包 · API 余额** | 余额明细 + 去充值 / 用量明细 / 重新获取 + 自动刷新间隔 / 预警阈值设置 |
-| **插件** | 已装数量 + 「插件管理」入口（市场/我的插件/创建插件）+ 与网页设置的分工说明 |
 | **Tailscale 远程访问** | 开/关（绿/红）+ 状态 + 开启确认 |
 | **更新** | 客户端 / Harness 引擎版本 + 检查更新 |
 | **服务器** | 状态 + 浏览器打开 / 重启（确认）/ 停止（确认） |
 
-> 分工：**控制中心**管客户端的钱包、插件生命周期、远程、更新与服务；Agent 的模型 / 预设 / 权限等配置在**网页左下角『设置』**里调整。
-
-### 插件管理
-
-- **插件市场**
-  - `npm 插件`：搜索、一键**安装 / 卸载**（安装 = 预写 pnpm 构建许可 + `pnpm add` + 写入 `dsh.profile.bundles` + 重启服务）
-  - **搜索框支持输入完整 npm 包名做精确匹配**——未打 `dsh-plugin` 关键词的插件（如 `dsh-better-sidebar`）也能直接找到并安装
-  - `GitHub 仓库`：按 star 降序、每日自动刷新（Top 100），点「打开仓库」跳转浏览
-  - 简介自动翻译为中文并带分类筛选
-- **我的插件**
-  - 扫描 bundles ∪ dependencies ∪ `~/.dsh/profiles/web/plugins/`（本地自定义插件）
-  - 本地插件：启用/禁用/删除（**热更新，即时生效**）
-  - npm 插件：启用/禁用/卸载（需重启服务，会结束当前会话）
-- **创建插件**（我的插件 → 创建插件）
-  - 填包名 + 描述 + 选类型（空骨架 / 工具 / 定时任务 / 简单服务）
-  - 实时预览生成代码，创建后自动挂载到 `~/.dsh/profiles/web/plugins/<name>/`，热更新生效
-  - 生成的插件可直接编辑 `index.js`，无需重新编译 harness
+> 分工：**控制中心**管客户端的钱包、远程、更新与服务；Agent 的模型 / 预设 / 权限、插件市场等配置在**网页**里完成。
 
 ### 服务器菜单（菜单栏 → 服务器）
 
@@ -130,19 +105,11 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 同一份源码编译的 CLI（`~/.dsh/dsh-desktop/bin/dshctl`），无 GUI 也能管理：
 
 ```
-dshctl status                 查看服务状态
-dshctl balance                API 余额/用量
-dshctl installed              已装插件 + bundles
-dshctl myplugins              我的插件（含本地自定义）
-dshctl plugins [npm|github]   搜索插件市场
-dshctl install <pkg>          安装插件（pnpm + bundles + 重启）
-dshctl uninstall <pkg>        卸载插件
-dshctl create-plugin <name> <empty|tool|timer|service>   创建本地插件
-dshctl local-enable <name> on|off   本地插件启停
-dshctl local-delete <name>    删除本地插件
+dshctl status                查看服务状态
+dshctl balance               API 余额/用量
+dshctl update-check          检查 Harness 引擎更新
 dshctl remote <dns|check|state|off>   Tailscale 远程
-dshctl update-check           检查 Harness 引擎更新
-dshctl log                    查看服务日志
+dshctl log                   查看服务日志
 ```
 
 ## ⚙️ 配置
@@ -159,20 +126,17 @@ dshctl log                    查看服务日志
 ├── Sources/                # Swift 源码（GUI + dshctl 共用服务层）
 │   ├── App.swift  AppStore.swift  WebView.swift  TopBar.swift
 │   ├── ControlCenter.swift                              # 控制中心（卡片面板）
-│   ├── PluginSheets.swift  PluginService.swift          # 我的插件 + 创建向导
-│   ├── LocalizeService.swift                            # 插件简介中文化/分类
 │   ├── RemoteService.swift  UpdateChecker.swift  AppSettings.swift
 │   ├── dshctl.swift                                     # CLI
-│   └── Models / Utils / ServerManager / BalanceService / MarketplaceService
+│   └── Models / Utils / ServerManager / BalanceService
 ├── Scripts/
-│   ├── patchctl.mjs                                     # cordis.patch.yml 维护（本地插件挂载）
-│   └── gen-icon.swift（开发辅助）
+│   └── gen-icon.swift                                   # 应用图标生成（开发辅助）
 ├── Resources/dsh-logo.svg   # 菜单栏 Harness logo
 ├── launch.sh / stop.sh      # Harness 服务启停（幂等，支持 trusted-host）
 ├── tailscale-serve.sh       # 远程访问脚本（App 内开关的 CLI 版）
 ├── build.sh                 # 一键编译 + 打包 + 签名 + 安装到 /Applications
-├── Info.plist / package.json / LICENSE(MIT) / .gitignore
-└── bin/  cache/             # 构建产物 / 运行缓存（不入库）
+├── Info.plist / LICENSE(MIT) / .gitignore
+└── bin/                     # 构建产物（不入库）
 ```
 
 ## 🏗 开发者
@@ -182,9 +146,6 @@ dshctl log                    查看服务日志
 swiftc -swift-version 5 Sources/*.swift -o /tmp/test  # 手动编译调试
 ```
 
-- 本地持久插件机制：`plugins/<name>/index.js`（ESM，导出 `apply/inject/name`）+ `cordis.patch.yml` 条目 `{ id, name: ./plugins/<name>/index.js }`，**热更新即生效**，无需重新编译 harness
-- 插件市场数据：npm（`keywords:dsh-plugin` + 精确包名查询）+ GitHub（`topic:dsh-plugin`，按 star 每日缓存）
-
 ## ❓ FAQ
 
 **Q：打开 App 后页面空白 / 没有「新会话」等界面？**
@@ -193,14 +154,11 @@ A：等几秒让服务就绪，按 **⌘R**（或菜单「服务器 → 刷新�
 **Q：菜单栏没有余额显示？**
 A：App 启动后会创建菜单栏状态项；若被其他状态项遮挡，可拖动菜单栏图标调整位置；仍没有请确认 App 已重启。
 
+**Q：怎么安装 / 卸载插件？**
+A：客户端不内置插件管理，请使用 Harness 网页内的插件市场插件（如 [dsh-plugin-marketplace](https://github.com/AwesomeHou/dsh-plugin-marketplace)）在网页里安装/卸载。
+
 **Q：怎么在客户端里传图片？**
 A：Harness 网页界面支持把**图片**拖拽/粘贴到窗口（仅图片，且 DeepSeek 官方 API 为纯文本模型，`deepseek-official` 适配器会拒绝图片内容；如需处理图片，请先本地 OCR/提取文字再发给 Agent）。
-
-**Q：插件市场搜不到某个插件（如 dsh-better-sidebar）？**
-A：在 npm 插件页搜索框**输入完整包名**做精确匹配——未打 `dsh-plugin` 关键词的插件默认不在关键词列表里，但精确查询能直接找到。
-
-**Q：安装/卸载插件会怎样？**
-A：npm 插件的安装/卸载/启停需要**重启服务**，会结束当前会话；本地自定义插件则热更新、不影响会话。
 
 **Q：首次「远程」提示需要在 Tailscale 控制台启用？**
 A：这是 Tailscale 的一次性设置，点弹窗链接登录控制台启用 Serve/HTTPS 后，再点一次「开启远程」即可。

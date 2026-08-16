@@ -36,7 +36,6 @@ struct ControlCenterSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     BalanceCard()
-                    PluginsCard()
                     RemoteCard()
                     UpdateCard()
                     ServerCard()
@@ -47,7 +46,6 @@ struct ControlCenterSheet: View {
         .frame(minWidth: 640, minHeight: 700)
         .tint(CCTheme.blue)
         .onAppear {
-            store.loadInstalled()
             store.refreshRemoteState()
             store.refreshServerStatus()
         }
@@ -161,28 +159,6 @@ struct BalanceCard: View {
             refreshSeconds = store.settings.balanceRefreshSeconds
             threshold = store.settings.balanceWarningThreshold
         }
-    }
-}
-
-/// 插件卡：生命周期管理入口 + 与网页设置的分工说明。
-struct PluginsCard: View {
-    @EnvironmentObject var store: AppStore
-    @State private var showPlugins = false
-
-    var body: some View {
-        CCCard(title: "插件", icon: "puzzlepiece.extension") {
-            HStack {
-                Text("已安装 \(store.installedPlugins.count) 个插件（含本地自定义）")
-                    .font(.caption).foregroundColor(.secondary)
-                Spacer()
-                Button { showPlugins = true } label: { Label("插件管理", systemImage: "square.grid.2x2") }
-                    .buttonStyle(.bordered)
-                    .help("插件市场 / 我的插件 / 创建插件")
-            }
-            Text("安装 / 卸载 / 创建在这里完成；已装插件的参数与开关请在网页『设置 → 插件』调整。")
-                .font(.footnote).foregroundColor(.secondary)
-        }
-        .sheet(isPresented: $showPlugins) { PluginsSheet() }
     }
 }
 

@@ -6,17 +6,17 @@ cd "$ROOT"
 echo "== 编译 dshctl =="
 swiftc -swift-version 5 \
   Sources/dshctl.swift Sources/Models.swift Sources/Utils.swift \
-  Sources/ServerManager.swift Sources/BalanceService.swift Sources/MarketplaceService.swift \
-  Sources/PluginService.swift Sources/RemoteService.swift Sources/UpdateChecker.swift \
+  Sources/ServerManager.swift Sources/BalanceService.swift \
+  Sources/RemoteService.swift Sources/UpdateChecker.swift \
   -o bin/dshctl
 
 echo "== 编译 GUI =="
 swiftc -swift-version 5 \
-  Sources/App.swift Sources/AppStore.swift Sources/WebView.swift Sources/TopBar.swift Sources/PluginSheets.swift \
+  Sources/App.swift Sources/AppStore.swift Sources/WebView.swift Sources/TopBar.swift \
   Sources/ControlCenter.swift \
   Sources/Models.swift Sources/Utils.swift Sources/ServerManager.swift \
-  Sources/BalanceService.swift Sources/MarketplaceService.swift Sources/LocalizeService.swift \
-  Sources/PluginService.swift Sources/RemoteService.swift Sources/AppSettings.swift \
+  Sources/BalanceService.swift \
+  Sources/RemoteService.swift Sources/AppSettings.swift \
   Sources/UpdateChecker.swift \
   -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit
 
