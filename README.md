@@ -1,20 +1,35 @@
-# DeepSeek Harness 桌面客户端 (macOS)
+# DeepSeek Harness Desktop for macOS
 
-> 一个第三方的原生 macOS 桌面客户端，把 **DeepSeek Harness**（`dsh web`，运行在 `127.0.0.1:3080` 的 Agent 工作台）装进原生窗口，并补上余额管理、远程访问等实用能力。
+> 把 DeepSeek Harness 装进原生 macOS 窗口，并用独立于 Web 服务的 **Guardian 安全启动链**保护它：候选配置先隔离验证，确认可用后才切换；启动失败自动恢复，避免一次插件或配置修改让整个 `dsh web` 起不来。
 >
 > ⚠️ 本项目是**独立开发的第三方客户端**，与 DeepSeek 官方无隶属关系。
 
-## ✨ 功能特性
+## 为什么值得用
 
-- **内嵌完整 Harness Web UI** —— 原生 Swift + WKWebView，双击即用，自动拉起/管理 `dsh web` 服务
-- **macOS 菜单栏余额状态** —— Harness logo + 余额金额（绿/红按预警阈值），点开菜单可唤起客户端、刷新余额、检查更新
-- **菜单栏更新提示** —— 检测到 Harness 引擎新版本时，「检查更新」菜单项变为「🆕 有新版本 vX」
-- **服务器管理（电源键）** —— 自动拉起、菜单栏「服务器」重启/停止
-- **Guarded Boot 防自毁启动链** —— 修改后的 profile 先在临时端口冒烟；失败不停止正式服务，启动失败自动恢复黄金版本或进入安全模式
-- **原生服务保护面板** —— 查看 Guardian 模式、版本、PID、模块数、黄金快照与部署备份；支持完整预检、安全重启和恢复
-- **`dshctl` 命令行工具** —— 无 GUI 管理同一套能力
+- **防止“改代码把自己写死”**：profile、YAML、插件依赖和全部浏览器 bundle 先在临时环境完整启动；验证失败时，正在运行的正式服务不会被停止。
+- **自动恢复而不是反复崩溃**：正式启动失败会恢复 last-known-good 黄金快照；仍不可用时仅加载核心模块进入安全模式，并抑制重启风暴。
+- **保护层独立于被保护进程**：Guardian 由 macOS LaunchAgent 定时看护，运行在 `dsh web` 之外，即使 Web 服务已经挂掉仍能诊断和恢复。
+- **原生状态与操作入口**：在 macOS 顶部菜单“服务器 → 服务保护…”或右上角 DSH 状态图标中，查看模式、PID、模块数、备份和最近错误，并执行预检、安全重启、恢复或安全模式。
+- **完整桌面体验**：Swift + WKWebView 承载完整 Harness Web UI，自动管理本机服务，提供余额状态、更新提醒和 `dshctl` 命令行工具。
 
-> [dsh-ops-console](https://github.com/wendyltan/dsh-ops-console) 是可选的 Web/手机运维面板。Guardian 是客户端内置安全组件，不依赖该插件；安装插件后，同一套预检、恢复和部署状态会额外出现在 Harness 网页中。
+## 两个项目如何配合
+
+| 项目 | 定位 | 是否必需 |
+| --- | --- | --- |
+| **[dsh-desktop](https://github.com/wendyltan/dsh-desktop)** | macOS 客户端，也是 Guardian 的唯一源码与安装方；负责安全启动、自动恢复、原生面板和本机 CLI | Guardian 能力的主体 |
+| **[dsh-ops-console](https://github.com/wendyltan/dsh-ops-console)** | 安装到 Harness Web 的运维插件；把余额、日志、Tailscale 远程、Guardian 状态与安全操作带到浏览器和手机 | 可选 |
+
+只安装 dsh-desktop 时，Guardian 已完整工作，日常使用可以无感。加装 dsh-ops-console 后，同一套 Guardian 状态和安全操作会出现在网页“设置 → 运维控制台”，适合远程或手机管理。插件不复制 Guardian，也不会成为客户端启动的强制依赖。
+
+## 功能一览
+
+- **Harness 原生窗口**：双击即用，自动拉起并管理 `127.0.0.1:3080` 的 `dsh web`。
+- **Guarded Boot**：隔离预检、黄金快照、失败恢复、安全模式和重启熔断。
+- **服务保护面板**：展示 Guardian 版本/协议、运行模式、服务状态、PID、模块数、黄金版本与部署备份。
+- **macOS 菜单栏状态**：显示余额与预警颜色，快速打开客户端、刷新余额、查看更新和进入服务保护。
+- **安全服务器控制**：所有客户端重启统一经过 Guardian，不再执行未经验证的“停止再启动”。
+- **`dshctl` CLI**：无需打开 GUI 也能查询状态、预检、恢复和切换安全模式。
+- **可选远程运维**：配合 [dsh-ops-console](https://github.com/wendyltan/dsh-ops-console) 与 Tailscale，在手机浏览器查看状态并安全操作。
 
 > 插件安装 / 卸载 / 市场请使用 Harness 网页内的插件市场插件（如 [dsh-plugin-marketplace](https://github.com/AwesomeHou/dsh-plugin-marketplace)），客户端不再内置插件管理。
 
@@ -68,11 +83,13 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 
 ### 运维控制台（网页插件）
 
-原「控制中心」卡片面板与客户端顶栏已移除，钱包 / 远程 / 更新 / 服务器统一迁至网页「设置 → 运维控制台」（[dsh-ops-console](https://github.com/wendyltan/dsh-ops-console) 插件）。客户端只保留「菜单栏余额 + 电源键」这类必须留在原生进程里的能力。
+[dsh-ops-console](https://github.com/wendyltan/dsh-ops-console) 会在网页“设置”中增加“运维控制台”，集中展示余额、版本、服务器、日志、可信主机和 Tailscale 远程状态。它还会读取本客户端安装的 Guardian 协议，把安全预检、重启和恢复带到网页与手机端。
+
+插件是可选的：不安装时，客户端的 Guardian、原生服务保护面板、菜单栏和 `dshctl` 均照常工作。
 
 ### 服务器菜单（菜单栏 → 服务器）
 
-在浏览器中打开 / **刷新页面（⌘R）** / 服务保护… / 检查更新… / 安全重启 / 停止服务
+在浏览器中打开 / **刷新页面（⌘R）** / 服务保护… / 检查更新… / 重启服务 / 停止服务。其中“重启服务”实际调用 Guardian 安全重启链，不会裸停服务。
 
 ### 服务保护（Guardian）
 
@@ -131,7 +148,7 @@ dshctl log                   查看服务日志
 │   ├── gen-icon.swift
 │   └── install-guardian.mjs                             # 安装/升级外部 helper
 ├── Resources/dsh-logo.svg   # 菜单栏 Harness logo
-├── launch.sh / stop.sh      # Harness 服务启停（幂等，支持 trusted-host）
+├── launch.sh / stop.sh      # 统一转交 Guardian 的受保护启停入口
 ├── tailscale-serve.sh       # 远程访问脚本（App 内开关的 CLI 版）
 ├── build.sh                 # 一键编译 + 打包 + 签名 + 安装到 /Applications
 ├── Info.plist / LICENSE(MIT) / .gitignore
@@ -147,8 +164,13 @@ swiftc -swift-version 5 Sources/*.swift -o /tmp/test  # 手动编译调试
 
 ## ❓ FAQ
 
-**Q：打开 App 后页面空白 / 没有「新会话」等界面？**
-A：等几秒让服务就绪，按 **⌘R**（或菜单「服务器 → 刷新页面」）；仍不行查看 `~/.dsh/logs/dsh-web.log`，或菜单「服务器 → 重启服务」。
+**Q：打开 App 后页面空白 / 没有“新会话”等界面？**
+
+A：等几秒让服务就绪，按 **⌘R**（或菜单“服务器 → 刷新页面”）；仍不行先打开“服务器 → 服务保护…”查看最近错误并执行完整预检，再使用 Guardian 安全重启。
+
+**Q：为什么主窗口看不到 Guardian？**
+
+A：主窗口承载的是 Harness Web UI，Guardian 属于原生客户端能力。先点一下客户端窗口，再从 macOS 屏幕顶部“服务器 → 服务保护…”进入；也可点击右上角 DSH 状态图标。安装 dsh-ops-console 后，网页“设置 → 运维控制台”里也会出现 Guardian 状态。
 
 **Q：菜单栏没有余额显示？**
 A：App 启动后会创建菜单栏状态项；若被其他状态项遮挡，可拖动菜单栏图标调整位置；仍没有请确认 App 已重启。
