@@ -10,9 +10,11 @@
 - **macOS 菜单栏余额状态** —— Harness logo + 余额金额（绿/红按预警阈值），点开菜单可唤起客户端、刷新余额、检查更新
 - **菜单栏更新提示** —— 检测到 Harness 引擎新版本时，「检查更新」菜单项变为「🆕 有新版本 vX」
 - **服务器管理（电源键）** —— 自动拉起、菜单栏「服务器」重启/停止
+- **Guarded Boot 防自毁启动链** —— 修改后的 profile 先在临时端口冒烟；失败不停止正式服务，启动失败自动恢复黄金版本或进入安全模式
+- **原生服务保护面板** —— 查看 Guardian 模式、版本、PID、模块数、黄金快照与部署备份；支持完整预检、安全重启和恢复
 - **`dshctl` 命令行工具** —— 无 GUI 管理同一套能力
 
-> 钱包余额 / 用量、服务器日志、一键重启、引擎版本、Tailscale 远程开关等**运维能力**已迁至网页插件 [dsh-ops-console](https://github.com/wendyltan/dsh-ops-console)（设置 → 运维控制台），手机经 Tailscale 访问也能用；客户端只保留「电源键 + 菜单栏」这类必须留在原生进程里的能力。
+> [dsh-ops-console](https://github.com/wendyltan/dsh-ops-console) 是可选的 Web/手机运维面板。Guardian 是客户端内置安全组件，不依赖该插件；安装插件后，同一套预检、恢复和部署状态会额外出现在 Harness 网页中。
 
 > 插件安装 / 卸载 / 市场请使用 Harness 网页内的插件市场插件（如 [dsh-plugin-marketplace](https://github.com/AwesomeHou/dsh-plugin-marketplace)），客户端不再内置插件管理。
 
@@ -70,7 +72,19 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 
 ### 服务器菜单（菜单栏 → 服务器）
 
-在浏览器中打开 / **刷新页面（⌘R）** / 检查更新… / 重启服务 / 停止服务
+在浏览器中打开 / **刷新页面（⌘R）** / 服务保护… / 检查更新… / 安全重启 / 停止服务
+
+### 服务保护（Guardian）
+
+Guardian 是随客户端安装、但运行在 `dsh web` 进程之外的轻量 helper：
+
+1. 检查 profile JSON、YAML、bundle 解析和外接盘依赖。
+2. 在临时 `DSH_HOME` 与随机端口启动完整候选服务并验证全部 client bundle。
+3. 通过后才停止正式服务，并记录 last-known-good 黄金快照。
+4. 正式启动失败时自动恢复；仍失败则只加载核心 Web 模块进入安全模式。
+5. LaunchAgent 每 60 秒检查一次；10 分钟内连续失败 3 次会阻止重启循环并进入安全模式。
+
+菜单「服务器 → 服务保护…」和菜单栏「服务保护…」都能打开原生面板。即使没有安装 dsh-ops-console，这套保护仍然完整可用。
 
 ### Tailscale 远程访问
 
@@ -91,6 +105,7 @@ dshctl status                查看服务状态
 dshctl balance               API 余额/用量
 dshctl update-check          检查 Harness 引擎更新
 dshctl remote <dns|check|state|off>   Tailscale 远程
+dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities>
 dshctl log                   查看服务日志
 ```
 
@@ -107,11 +122,14 @@ dshctl log                   查看服务日志
 ~/.dsh/dsh-desktop/
 ├── Sources/                # Swift 源码（GUI + dshctl 共用服务层）
 │   ├── App.swift  AppStore.swift  WebView.swift
+│   ├── GuardianService.swift  GuardianPanel.swift
 │   ├── RemoteService.swift  UpdateChecker.swift  AppSettings.swift
 │   ├── dshctl.swift                                     # CLI
 │   └── Models / Utils / ServerManager / BalanceService
+├── Guardian/              # Guardian 唯一源码、运行时补丁和 LaunchAgent 模板
 ├── Scripts/
-│   └── gen-icon.swift                                   # 应用图标生成（开发辅助）
+│   ├── gen-icon.swift
+│   └── install-guardian.mjs                             # 安装/升级外部 helper
 ├── Resources/dsh-logo.svg   # 菜单栏 Harness logo
 ├── launch.sh / stop.sh      # Harness 服务启停（幂等，支持 trusted-host）
 ├── tailscale-serve.sh       # 远程访问脚本（App 内开关的 CLI 版）

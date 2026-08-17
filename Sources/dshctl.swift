@@ -20,6 +20,27 @@ struct DSHCtl {
             }
         case "log":
             print(ServerManager.recentLog())
+        case "guardian":
+            let subcommand = args.count > 1 ? args[1] : "status"
+            let allowed = ["status", "preflight", "restart", "recover", "safe-mode", "capabilities"]
+            guard allowed.contains(subcommand) else {
+                print("usage: dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities>")
+                exit(2)
+            }
+            let (response, error) = GuardianService.run(subcommand)
+            if let error { print("ERROR: \(error)"); exit(1) }
+            if let response {
+                print("guardian: \(response.guardianVersion ?? "unknown") · protocol \(response.protocolVersion ?? 0)")
+                if subcommand == "capabilities" {
+                    print("capabilities: \(response.capabilities?.joined(separator: ", ") ?? "none")")
+                } else {
+                    print("mode: \(response.effectiveMode)")
+                    print("service: \(response.up == true ? "up" : "down")")
+                    print("last-known-good: \(response.lastKnownGood == true ? "yes" : "no")")
+                    print("ops-console: \(response.opsInstalled == true ? "installed" : "optional/not installed")")
+                    if let stage = response.stage { print("stage: \(stage)") }
+                }
+            }
         case "update-check":
             let installed = UpdateChecker.currentEngine
             let (latest, err) = UpdateChecker.checkEngine()
@@ -55,6 +76,7 @@ struct DSHCtl {
               dshctl balance               查看 API 余额/用量
               dshctl update-check          检查 Harness 引擎更新
               dshctl remote <dns|check|state|off>   Tailscale 远程
+              dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities>
               dshctl log                   查看服务日志
             """)
         }

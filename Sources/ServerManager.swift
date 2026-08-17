@@ -9,6 +9,7 @@ enum ServerManager {
 
     static var launchScript: String { "\(home)/.dsh/dsh-desktop/launch.sh" }
     static var stopScript: String { "\(home)/.dsh/dsh-desktop/stop.sh" }
+    static var guardianScript: String { "\(home)/.dsh/guardian/guardian.mjs" }
     static var logFile: String { "\(home)/.dsh/logs/dsh-web.log" }
 
     static func isUp() -> Bool {
@@ -29,12 +30,10 @@ enum ServerManager {
         runScriptFile(stopScript)
     }
 
-    /// 停止再启动，确保新安装的 bundle 生效。
+    /// 由外部 Guardian 先隔离预检，再安全重启；失败时自动恢复或进入安全模式。
     @discardableResult
     static func restart() -> ShellResult {
-        stop()
-        Thread.sleep(forTimeInterval: 1)
-        return start()
+        zsh("node \(shellQuote(guardianScript)) restart --json")
     }
 
     /// 最近的服务日志尾部，用于界面展示诊断信息。

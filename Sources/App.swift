@@ -15,6 +15,7 @@ struct DeepSeekHarnessApp: App {
                     store.refreshRemoteState()
                     store.startBalanceAutoRefresh()
                     store.startUpdateAutoCheck()
+                    store.startGuardianAutoRefresh()
                     store.ensureStatusItem()
                 }
         }
@@ -27,6 +28,7 @@ struct DeepSeekHarnessApp: App {
                 Button("刷新页面") { store.reloadWebView() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
+                Button("服务保护…") { store.showGuardianPanel = true }
                 Button("检查更新…") { store.checkUpdate(force: true) }
                 Divider()
                 Button("重启服务") { store.restartServer() }
@@ -42,6 +44,9 @@ struct ContentView: View {
     var body: some View {
         WebView(url: URL(string: ServerManager.url)!, reloadToken: store.reloadToken)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .sheet(isPresented: $store.showGuardianPanel) {
+                GuardianPanel().environmentObject(store)
+            }
             .alert("更新检查", isPresented: $store.showUpdateAlert) {
             if store.updateAvailable {
                 Button("打开 npm 页面") {

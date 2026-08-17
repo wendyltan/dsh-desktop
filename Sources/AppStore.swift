@@ -4,6 +4,12 @@ import AppKit
 final class AppStore: NSObject, ObservableObject {
     @Published var serverStatus = "…"
     @Published var reloadToken = 0
+    @Published var showGuardianPanel = false
+    @Published var guardianStatus: GuardianResponse?
+    @Published var guardianBusy = false
+    @Published var guardianMessage = ""
+    @Published var guardianError: String?
+    private var guardianTimer: Timer?
 
     @Published var balance: BalanceInfo?
     @Published var balanceError: String?
@@ -100,6 +106,9 @@ final class AppStore: NSObject, ObservableObject {
         let open = NSMenuItem(title: "打开客户端面板", action: #selector(menuShowClientPanel), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let protection = NSMenuItem(title: "服务保护…", action: #selector(menuShowProtection), keyEquivalent: "")
+        protection.target = self
+        menu.addItem(protection)
         let refresh = NSMenuItem(title: "刷新余额", action: #selector(menuRefreshBalance), keyEquivalent: "")
         refresh.target = self
         menu.addItem(refresh)
@@ -173,17 +182,15 @@ final class AppStore: NSObject, ObservableObject {
     @objc private func menuRefreshBalance() { refreshBalance() }
     @objc private func menuCheckUpdate() { checkUpdate(force: true) }
     @objc private func menuQuit() { NSApp.terminate(nil) }
+    @objc private func menuShowProtection() {
+        showGuardianPanel = true
+        menuShowClientPanel()
+    }
 
     // MARK: - 服务器
 
     func restartServer() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            _ = ServerManager.restart()
-            DispatchQueue.main.async {
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-            }
-        }
+        restartWithGuardian()
     }
 
     func stopServer() {
@@ -193,6 +200,60 @@ final class AppStore: NSObject, ObservableObject {
                 self.serverStatus = ServerManager.statusText()
             }
         }
+    }
+
+    // MARK: - Guardian 服务保护
+
+    func startGuardianAutoRefresh() {
+        refreshGuardian()
+        guardianTimer?.invalidate()
+        guardianTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.refreshGuardian()
+        }
+    }
+
+    func refreshGuardian() {
+        DispatchQueue.global(qos: .utility).async {
+            let (response, error) = GuardianService.run("status")
+            DispatchQueue.main.async {
+                self.guardianStatus = response
+                self.guardianError = error
+            }
+        }
+    }
+
+    private func runGuardian(_ command: String, success: String, reloadWeb: Bool = false) {
+        guardianBusy = true
+        guardianError = nil
+        guardianMessage = "正在执行…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (response, error) = GuardianService.run(command)
+            DispatchQueue.main.async {
+                self.guardianBusy = false
+                self.guardianStatus = response ?? self.guardianStatus
+                self.guardianError = error
+                self.guardianMessage = error == nil ? success : "操作失败"
+                self.serverStatus = ServerManager.statusText()
+                if reloadWeb { self.reloadWebView() }
+                self.refreshGuardian()
+            }
+        }
+    }
+
+    func runGuardianPreflight() {
+        runGuardian("preflight", success: "完整预检通过；正式服务未受影响。")
+    }
+
+    func restartWithGuardian() {
+        runGuardian("restart", success: "安全重启完成。", reloadWeb: true)
+    }
+
+    func recoverWithGuardian() {
+        runGuardian("recover", success: "黄金版本已恢复并重新启动。", reloadWeb: true)
+    }
+
+    func enterGuardianSafeMode() {
+        runGuardian("safe-mode", success: "已进入安全模式。", reloadWeb: true)
     }
 
     // MARK: - Tailscale 远程访问

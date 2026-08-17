@@ -7,7 +7,7 @@ echo "== 编译 dshctl =="
 swiftc -swift-version 5 \
   Sources/dshctl.swift Sources/Models.swift Sources/Utils.swift \
   Sources/ServerManager.swift Sources/BalanceService.swift \
-  Sources/RemoteService.swift Sources/UpdateChecker.swift \
+  Sources/RemoteService.swift Sources/UpdateChecker.swift Sources/GuardianService.swift \
   -o bin/dshctl
 
 echo "== 编译 GUI =="
@@ -16,8 +16,11 @@ swiftc -swift-version 5 \
   Sources/Models.swift Sources/Utils.swift Sources/ServerManager.swift \
   Sources/BalanceService.swift \
   Sources/RemoteService.swift Sources/AppSettings.swift \
-  Sources/UpdateChecker.swift \
+  Sources/UpdateChecker.swift Sources/GuardianService.swift Sources/GuardianPanel.swift \
   -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit
+
+echo "== 安装 Guardian 安全启动组件 =="
+node Scripts/install-guardian.mjs
 
 echo "== 组装 .app =="
 APP="$ROOT/DeepSeek Harness.app"
