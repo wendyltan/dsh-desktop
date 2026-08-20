@@ -6,6 +6,7 @@ import {
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:net'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +32,7 @@ const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
 const GUARDIAN_VERSION = '0.3.0'
 const PROTOCOL_VERSION = 2
-const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations']
+const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations', 'diff']
 const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
 
 mkdirSync(ROOT, { recursive: true })
@@ -350,6 +351,94 @@ function restoreLkg() {
   return { ok: true, restored: LKG }
 }
 
+function digestFile(file) {
+  try {
+    const bytes = readFileSync(file)
+    return { kind: 'file', digest: createHash('sha256').update(bytes).digest('hex'), size: bytes.length }
+  } catch (error) {
+    return { kind: 'unreadable', error: String(error?.code ?? error?.message ?? error) }
+  }
+}
+
+function collectTree(root, prefix = '') {
+  const result = new Map()
+  if (!existsSync(root)) return result
+  const walk = (directory, relative) => {
+    let names
+    try { names = readdirSync(directory).sort() } catch (error) {
+      result.set(relative || '.', { kind: 'unreadable', error: String(error?.code ?? error?.message ?? error) })
+      return
+    }
+    for (const name of names) {
+      const absolute = join(directory, name)
+      const child = relative ? join(relative, name) : name
+      try {
+        const info = lstatSync(absolute)
+        if (info.isDirectory()) walk(absolute, child)
+        else if (info.isSymbolicLink()) result.set(child, { kind: 'link', target: readlinkSync(absolute) })
+        else if (info.isFile()) result.set(child, digestFile(absolute))
+      } catch (error) {
+        result.set(child, { kind: 'unreadable', error: String(error?.code ?? error?.message ?? error) })
+      }
+    }
+  }
+  walk(root, prefix)
+  return result
+}
+
+function sameEntry(left, right) {
+  if (left?.kind !== right?.kind) return false
+  if (left?.kind === 'file') return left.digest === right.digest && left.size === right.size
+  if (left?.kind === 'link') return left.target === right.target
+  return left?.error === right?.error
+}
+
+function compareTrees(current, golden, scope) {
+  const items = []
+  const paths = [...new Set([...current.keys(), ...golden.keys()])].sort()
+  for (const path of paths) {
+    const live = current.get(path)
+    const saved = golden.get(path)
+    let status
+    if (live === undefined) status = 'deleted'
+    else if (saved === undefined) status = 'added'
+    else if (live.kind === 'unreadable' || saved.kind === 'unreadable') status = 'unreadable'
+    else if (!sameEntry(live, saved)) status = 'modified'
+    else continue
+    items.push({ scope, path, status })
+  }
+  return items
+}
+
+/** Return metadata-only drift against last-known-good. File contents and
+ * digests never leave Guardian, so secret-bearing config remains private. */
+function configDiff() {
+  if (!existsSync(LKG)) return { ok: true, available: false, changed: false, summary: {}, items: [] }
+  const manifest = readJson(join(LKG, 'manifest.json'), {})
+  const profileFiles = [...new Set([...(manifest.profileFiles ?? []), ...PROFILE_FILES])]
+    .filter((name) => typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name))
+  const currentProfile = new Map()
+  const savedProfile = new Map()
+  for (const name of profileFiles) {
+    if (existsSync(join(PROFILE, name))) currentProfile.set(name, digestFile(join(PROFILE, name)))
+    if (existsSync(join(LKG, 'profile', name))) savedProfile.set(name, digestFile(join(LKG, 'profile', name)))
+  }
+  const items = compareTrees(currentProfile, savedProfile, 'profile')
+  for (const integration of manifest.integrations ?? []) {
+    if (typeof integration?.target !== 'string' || !isInsideDshHome(integration.target)) continue
+    if (typeof integration.snapshotName !== 'string' || !/^[A-Za-z0-9_-]+$/.test(integration.snapshotName)) continue
+    const saved = join(LKG, 'integrations', integration.snapshotName)
+    items.push(...compareTrees(collectTree(integration.target), collectTree(saved), `integration:${integration.id}`))
+  }
+  const summary = { added: 0, modified: 0, deleted: 0, unreadable: 0 }
+  for (const item of items) summary[item.status] += 1
+  return {
+    ok: true, available: true, changed: items.length > 0,
+    snapshotAt: manifest.createdAt ?? state().lastSnapshot ?? null,
+    summary, items,
+  }
+}
+
 function ensureSafeProfile() {
   mkdirSync(SAFE_PROFILE, { recursive: true })
   writeJsonAtomic(join(SAFE_PROFILE, 'package.json'), {
@@ -514,6 +603,7 @@ async function main() {
     return output({ ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION, capabilities: CAPABILITIES })
   }
   if (command === 'status') return output(await status())
+  if (command === 'diff') return output(configDiff())
   if (command === 'preflight') {
     const result = await preflight({ smoke: !process.argv.includes('--quick') })
     output(result)
@@ -570,4 +660,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
 }
 
-export { copyProfileFiles, ensureSafeProfile, guardianIntegrations, restoreLkg, snapshot, validateProfileFiles }
+export { configDiff, copyProfileFiles, ensureSafeProfile, guardianIntegrations, restoreLkg, snapshot, validateProfileFiles }

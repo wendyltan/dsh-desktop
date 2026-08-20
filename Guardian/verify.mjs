@@ -45,19 +45,26 @@ try {
 
   guardian.snapshot()
   assert.equal(existsSync(join(root, 'guardian', 'last-known-good', 'integrations')), true)
+  assert.deepEqual(guardian.configDiff().summary, { added: 0, modified: 0, deleted: 0, unreadable: 0 })
 
   writeFileSync(join(profile, '.test-settings.json'), '{"bad":true}\n')
   writeFileSync(join(profile, 'cordis.patch.yml'), 'not: [valid\n')
   writeFileSync(join(integration, 'marker.txt'), 'broken\n')
+  const drift = guardian.configDiff()
+  assert.equal(drift.changed, true)
+  assert.equal(drift.items.some((item) => item.scope === 'profile' && item.path === 'cordis.patch.yml' && item.status === 'modified'), true)
+  assert.equal(drift.items.some((item) => item.scope === 'profile' && item.path === '.test-settings.json' && item.status === 'added'), true)
+  assert.equal(drift.items.some((item) => item.scope === 'integration:test-integration' && item.path === 'marker.txt' && item.status === 'modified'), true)
   guardian.restoreLkg()
   assert.equal(existsSync(join(profile, '.test-settings.json')), false)
   assert.equal(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8'), '[]\n')
   assert.equal(readFileSync(join(integration, 'marker.txt'), 'utf8'), 'golden\n')
+  assert.equal(guardian.configDiff().changed, false)
 
   writeFileSync(join(profile, 'cordis.patch.yml'), 'not: [valid\n')
   guardian.ensureSafeProfile()
   assert.equal(readFileSync(join(root, 'profiles', 'safe', 'cordis.patch.yml'), 'utf8'), '[]\n')
-  console.log('Guardian verification passed: generic integration, LKG mirror restore, safe patch isolation')
+  console.log('Guardian verification passed: generic integration, metadata-only diff, LKG mirror restore, safe patch isolation')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

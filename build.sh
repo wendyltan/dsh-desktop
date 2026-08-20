@@ -2,22 +2,26 @@
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
+mkdir -p bin/bin-cache
 
 echo "== 编译 dshctl =="
-swiftc -swift-version 5 \
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/dshctl.swift Sources/Models.swift Sources/Utils.swift \
   Sources/ServerManager.swift Sources/BalanceService.swift \
   Sources/RemoteService.swift Sources/UpdateChecker.swift Sources/GuardianService.swift \
   -o bin/dshctl
 
 echo "== 编译 GUI =="
-swiftc -swift-version 5 \
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/App.swift Sources/AppStore.swift Sources/WebView.swift \
   Sources/Models.swift Sources/Utils.swift Sources/ServerManager.swift \
   Sources/BalanceService.swift \
   Sources/RemoteService.swift Sources/AppSettings.swift \
   Sources/UpdateChecker.swift Sources/GuardianService.swift Sources/GuardianPanel.swift \
-  -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit
+  Sources/EventBridge.swift Sources/NotificationService.swift Sources/GlobalHotKey.swift \
+  Sources/QuickPromptPanel.swift \
+  -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit \
+  -framework Network -framework UserNotifications -framework Carbon
 
 echo "== 安装 Guardian 安全启动组件 =="
 node Scripts/install-guardian.mjs
@@ -52,15 +56,19 @@ codesign --force --deep --sign - "$APP"
 # 所以放在 SSD 只能靠「聚焦」搜到。本 App 仅 ~1MB，放内置盘几乎不占空间，
 # 却能同时被 Spotlight、Launchpad、Finder「应用程序」搜到并运行。
 APPS="/Applications/DeepSeek Harness.app"
+BACKUP_ROOT="$HOME/.dsh/guardian/install-backups"
 
-rm -rf "$APPS" 2>/dev/null || true
+if [ -e "$APPS" ]; then
+  STAMP="$(date +%Y%m%d-%H%M%S)"
+  BACKUP_APP="$BACKUP_ROOT/DeepSeek Harness-$STAMP.app"
+  mkdir -p "$BACKUP_ROOT"
+  ditto "$APPS" "$BACKUP_APP"
+  echo "  旧版本已备份：$BACKUP_APP"
+  rm -rf "$APPS"
+fi
 ditto "$APP" "$APPS"
 codesign --force --deep --sign - "$APPS"
 xattr -dr com.apple.quarantine "$APPS" 2>/dev/null || true
-
-# 清理旧的 SSD 副本 / 符号链接 / 桌面副本
-rm -rf "/Volumes/ExtSSD/Application/DeepSeek Harness.app" 2>/dev/null || true
-rm -rf "$HOME/Desktop/DeepSeek Harness.app" 2>/dev/null || true
 
 mdimport "$APPS" 2>/dev/null || true
 

@@ -10,6 +10,8 @@
 - **自动恢复而不是反复崩溃**：正式启动失败会恢复 last-known-good 黄金快照；仍不可用时仅加载核心模块进入安全模式，并抑制重启风暴。
 - **保护层独立于被保护进程**：Guardian 由 macOS LaunchAgent 定时看护，运行在 `dsh web` 之外，即使 Web 服务已经挂掉仍能诊断和恢复。
 - **原生状态与操作入口**：在 macOS 顶部菜单“服务器 → 服务保护…”或右上角 DSH 状态图标中，查看模式、PID、模块数、备份和最近错误，并执行预检、安全重启、恢复或安全模式。
+- **原生控制面**：`⌥Space` 全局唤起快速提问；审批、完成、失败、Guardian 恢复和低余额使用 macOS 通知，并在通知中安全批准或拒绝。
+- **配置漂移可见**：Guardian 只返回路径和状态，不泄露配置正文；原生面板展示相对黄金版本的新增、修改、删除并可显式恢复。
 - **完整桌面体验**：Swift + WKWebView 承载完整 Harness Web UI，自动管理本机服务，提供余额状态、更新提醒和 `dshctl` 命令行工具。
 
 ## 两个项目如何配合
@@ -26,6 +28,7 @@
 - **Harness 原生窗口**：双击即用，自动拉起并管理 `127.0.0.1:3080` 的 `dsh web`。
 - **Guarded Boot**：隔离预检、黄金快照、失败恢复、安全模式和重启熔断。
 - **服务保护面板**：展示 Guardian 版本/协议、运行模式、服务状态、PID、模块数、黄金版本与部署备份。
+- **P0 原生事件桥**：令牌认证、仅回环监听、事件去重、交互式通知、审批 Web 回退和快速提问。
 - **macOS 菜单栏状态**：显示余额与预警颜色，快速打开客户端、刷新余额、查看更新和进入服务保护。
 - **安全服务器控制**：所有客户端重启统一经过 Guardian，不再执行未经验证的“停止再启动”。
 - **`dshctl` CLI**：无需打开 GUI 也能查询状态、预检、恢复和切换安全模式。
@@ -56,7 +59,12 @@ git clone https://github.com/wendyltan/dsh-desktop.git ~/.dsh/dsh-desktop
 
 # 2. 编译 + 签名 + 安装到 /Applications
 cd ~/.dsh/dsh-desktop && ./build.sh
+
+# 3. 显式安装原生事件的 Harness 适配器（会先做 Guardian 完整预检，失败自动回滚）
+node Scripts/install-bridge.mjs
 ```
+
+第 3 步会修改当前 `web` profile 和审批回答链，因此不会被 `build.sh` 静默执行。适配器属于 dsh-desktop，不依赖也不读取 dsh-ops-console；客户端或适配器离线时，审批自动退回 Harness 官方 Web 处理链。
 
 ### 配置 API Key
 
@@ -80,6 +88,7 @@ DEEPSEEK_API_KEY: sk-xxxxxxxxxxxxxxxx
 
 - 菜单栏常驻 **Harness logo + 余额金额**（如 `¥52.45`；低于预警阈值变**红色**，否则绿色），随自动刷新与阈值设置实时更新
 - 点击图标展开菜单：**打开客户端面板**（唤起主窗口）/ 刷新余额 / 检查更新（有新版本时变「🆕 有新版本 vX」）/ 退出
+- 按 **⌥Space** 可在任意应用前唤起快速提问；Harness 适配器未连接时草稿会保留，并打开完整客户端，不会假装发送成功。
 
 ### 运维控制台（网页插件）
 
@@ -122,7 +131,7 @@ dshctl status                查看服务状态
 dshctl balance               API 余额/用量
 dshctl update-check          检查 Harness 引擎更新
 dshctl remote <dns|check|state|off>   Tailscale 远程
-dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities>
+dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>
 dshctl log                   查看服务日志
 ```
 
@@ -140,13 +149,19 @@ dshctl log                   查看服务日志
 ├── Sources/                # Swift 源码（GUI + dshctl 共用服务层）
 │   ├── App.swift  AppStore.swift  WebView.swift
 │   ├── GuardianService.swift  GuardianPanel.swift
+│   ├── EventBridge.swift  NotificationService.swift
+│   ├── GlobalHotKey.swift  QuickPromptPanel.swift
 │   ├── RemoteService.swift  UpdateChecker.swift  AppSettings.swift
 │   ├── dshctl.swift                                     # CLI
 │   └── Models / Utils / ServerManager / BalanceService
 ├── Guardian/              # Guardian 唯一源码、运行时补丁和 LaunchAgent 模板
+├── HarnessBridge/         # Harness 正式事件/审批/提问协议到原生桥的适配器
+├── Bridge/                # 本地协议说明与回环自测
 ├── Scripts/
 │   ├── gen-icon.swift
-│   └── install-guardian.mjs                             # 安装/升级外部 helper
+│   ├── install-guardian.mjs                             # 安装/升级外部 helper
+│   ├── install-bridge.mjs                               # 显式、可回滚地部署适配器
+│   └── send-event.mjs                                  # 协议诊断工具
 ├── Resources/dsh-logo.svg   # 菜单栏 Harness logo
 ├── launch.sh / stop.sh      # 统一转交 Guardian 的受保护启停入口
 ├── tailscale-serve.sh       # 远程访问脚本（App 内开关的 CLI 版）

@@ -61,7 +61,45 @@ struct GuardianPanel: View {
                     statusRow("黄金版本", response?.lastKnownGood == true ? "已建立" : "尚未建立")
                     statusRow("受保护集成", "\(response?.integrations?.count ?? 0) 个")
                     statusRow("最近成功", compactDate(response?.state?.lastSuccess))
+                    statusRow("原生事件", store.bridgeStatus)
                 }.padding(.vertical, 4)
+            }
+
+            GroupBox("相对黄金版本的配置差异") {
+                VStack(alignment: .leading, spacing: 7) {
+                    if let diff = store.guardianDiff {
+                        if !diff.available {
+                            Text("尚未建立黄金版本。")
+                        } else if !diff.changed {
+                            Text("当前配置与黄金版本一致。")
+                                .foregroundStyle(.green)
+                        } else {
+                            let summary = diff.summary
+                            Text("新增 \(summary?.added ?? 0) · 修改 \(summary?.modified ?? 0) · 删除 \(summary?.deleted ?? 0) · 无法读取 \(summary?.unreadable ?? 0)")
+                                .font(.callout).fontWeight(.medium)
+                            ForEach(Array(diff.items.prefix(8))) { item in
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(diffStatus(item.status))
+                                        .foregroundStyle(diffColor(item.status))
+                                        .frame(width: 64, alignment: .leading)
+                                    Text("\(item.scope) / \(item.path)")
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
+                                    Spacer()
+                                }
+                            }
+                            if diff.items.count > 8 {
+                                Text("另有 \(diff.items.count - 8) 项未展开。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        Text(store.guardianDiffError ?? "正在读取差异…")
+                            .foregroundStyle(store.guardianDiffError == nil ? Color.secondary : Color.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
             }
 
             if let error = store.guardianError ?? response?.state?.lastError, !error.isEmpty {
@@ -75,6 +113,12 @@ struct GuardianPanel: View {
                 Text(store.guardianMessage)
                     .font(.callout)
                     .foregroundStyle(store.guardianError == nil ? Color.secondary : Color.red)
+            }
+
+            if !store.nativeActionMessage.isEmpty {
+                Text(store.nativeActionMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 10) {
@@ -93,7 +137,7 @@ struct GuardianPanel: View {
             .disabled(store.guardianBusy)
         }
         .padding(22)
-        .frame(minWidth: 650, minHeight: 430)
+        .frame(minWidth: 700, minHeight: 560)
         .onAppear { store.refreshGuardian() }
         .alert(item: $pendingAction) { action in
             Alert(
@@ -122,5 +166,22 @@ struct GuardianPanel: View {
     private func compactDate(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "—" }
         return value.replacingOccurrences(of: "T", with: " ").replacingOccurrences(of: "Z", with: "")
+    }
+
+    private func diffStatus(_ status: String) -> String {
+        switch status {
+        case "added": return "新增"
+        case "modified": return "修改"
+        case "deleted": return "删除"
+        default: return "无法读取"
+        }
+    }
+
+    private func diffColor(_ status: String) -> Color {
+        switch status {
+        case "added": return .green
+        case "modified": return .orange
+        default: return .red
+        }
     }
 }

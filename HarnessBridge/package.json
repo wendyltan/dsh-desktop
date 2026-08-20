@@ -1,0 +1,25 @@
+{
+  "name": "dsh-desktop-bridge",
+  "version": "0.1.0",
+  "description": "Local-only DeepSeek Harness adapter for dsh-desktop notifications, approvals and quick prompts.",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "guardian": {
+      "protocolVersion": 1,
+      "healthPath": "/dsh-desktop-bridge/status",
+      "snapshotLinkedBundle": true,
+      "profileFiles": []
+    }
+  },
+  "files": ["lib", "cordis.patch.yml"]
+}

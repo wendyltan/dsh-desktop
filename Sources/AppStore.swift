@@ -9,7 +9,19 @@ final class AppStore: NSObject, ObservableObject {
     @Published var guardianBusy = false
     @Published var guardianMessage = ""
     @Published var guardianError: String?
+    @Published var guardianDiff: GuardianDiffResponse?
+    @Published var guardianDiffError: String?
     private var guardianTimer: Timer?
+
+    @Published var bridgeStatus = "事件桥尚未启动"
+    @Published var nativeActionMessage = ""
+    private var eventBridge: EventBridge?
+    private let notificationService = NotificationService()
+    private let hotKey = GlobalHotKey()
+    private let quickPrompt = QuickPromptPanelController()
+    private var nativeSurfaceStarted = false
+    private var didNotifyLowBalance = false
+    private var lastGuardianMode: String?
 
     @Published var balance: BalanceInfo?
     @Published var balanceError: String?
@@ -58,6 +70,7 @@ final class AppStore: NSObject, ObservableObject {
                 self.balance = info
                 self.balanceError = err
                 self.updateStatusItemBalance()
+                self.maybeNotifyLowBalance()
             }
         }
     }
@@ -106,6 +119,9 @@ final class AppStore: NSObject, ObservableObject {
         let open = NSMenuItem(title: "打开客户端面板", action: #selector(menuShowClientPanel), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
+        ask.target = self
+        menu.addItem(ask)
         let protection = NSMenuItem(title: "服务保护…", action: #selector(menuShowProtection), keyEquivalent: "")
         protection.target = self
         menu.addItem(protection)
@@ -173,18 +189,77 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     /// 菜单栏「打开客户端面板」：唤起 App 窗口（不自动打开控制中心）。
-    @objc private func menuShowClientPanel() {
+    func showClientPanel() {
         NSApp.activate(ignoringOtherApps: true)
         for w in NSApp.windows where w.canBecomeMain {
             w.makeKeyAndOrderFront(nil)
         }
     }
+    @objc private func menuShowClientPanel() { showClientPanel() }
+    @objc private func menuQuickPrompt() { quickPrompt.toggle() }
     @objc private func menuRefreshBalance() { refreshBalance() }
     @objc private func menuCheckUpdate() { checkUpdate(force: true) }
     @objc private func menuQuit() { NSApp.terminate(nil) }
     @objc private func menuShowProtection() {
         showGuardianPanel = true
-        menuShowClientPanel()
+        showClientPanel()
+    }
+
+    // MARK: - 原生事件、通知与全局提问
+
+    func startNativeControlSurface() {
+        guard !nativeSurfaceStarted else { return }
+        nativeSurfaceStarted = true
+
+        notificationService.onOpenClient = { [weak self] in self?.showClientPanel() }
+        notificationService.onActionResult = { [weak self] message in self?.nativeActionMessage = message }
+        notificationService.start()
+
+        quickPrompt.onOpenClient = { [weak self] in self?.showClientPanel() }
+        quickPrompt.onSend = { [weak self] prompt, completion in
+            guard let bridge = self?.eventBridge else {
+                completion(.failure(EventBridgeError.unavailable("事件桥不可用，草稿已保留。")))
+                return
+            }
+            bridge.sendPrompt(prompt, completion: completion)
+        }
+
+        if let error = hotKey.registerOptionSpace(action: { [weak self] in self?.quickPrompt.toggle() }) {
+            nativeActionMessage = error
+        }
+
+        do {
+            let bridge = try EventBridge()
+            eventBridge = bridge
+            notificationService.callbackToken = bridge.token
+            try bridge.start(onEvent: { [weak self] event in
+                guard let self else { return }
+                self.notificationService.publish(event)
+                if event.type.hasPrefix("guardian.") { self.refreshGuardian() }
+            }, approvalAllowed: { [weak self] in
+                self?.notificationService.canDeliverApproval() == true
+            }, onState: { [weak self] state in self?.bridgeStatus = state })
+        } catch {
+            bridgeStatus = "事件桥启动失败：\(error.localizedDescription)"
+        }
+    }
+
+    func showQuickPrompt() { quickPrompt.show() }
+
+    private func maybeNotifyLowBalance() {
+        if balanceLow, !didNotifyLowBalance {
+            didNotifyLowBalance = true
+            notificationService.publish(DesktopBridgeEvent(
+                protocolVersion: EventBridge.protocolVersion,
+                id: "balance-low-\(Int(Date().timeIntervalSince1970))",
+                type: "balance.low",
+                title: "DeepSeek 余额不足",
+                message: "当前余额已低于 ¥\(String(format: "%.2f", settings.balanceWarningThreshold)) 的预警线。",
+                sessionId: nil, callbackURL: nil, promptURL: nil
+            ))
+        } else if !balanceLow {
+            didNotifyLowBalance = false
+        }
     }
 
     // MARK: - 服务器
@@ -215,9 +290,30 @@ final class AppStore: NSObject, ObservableObject {
     func refreshGuardian() {
         DispatchQueue.global(qos: .utility).async {
             let (response, error) = GuardianService.run("status")
+            let (diff, diffError): (GuardianDiffResponse?, String?)
+            if response?.capabilities?.contains("diff") == true {
+                (diff, diffError) = GuardianService.diff()
+            } else {
+                diff = nil
+                diffError = response == nil ? error : "当前 Guardian 不支持配置差异，请重新安装新版组件。"
+            }
             DispatchQueue.main.async {
                 self.guardianStatus = response
                 self.guardianError = error
+                self.guardianDiff = diff
+                self.guardianDiffError = diffError
+                if let mode = response?.effectiveMode, let previous = self.lastGuardianMode,
+                   mode != previous, mode == "recovered" || mode == "safe" {
+                    self.notificationService.publish(DesktopBridgeEvent(
+                        protocolVersion: EventBridge.protocolVersion,
+                        id: "guardian-mode-\(mode)-\(Int(Date().timeIntervalSince1970))",
+                        type: "guardian.recovered",
+                        title: mode == "safe" ? "Guardian 已进入安全模式" : "Guardian 已完成自动恢复",
+                        message: mode == "safe" ? "正式配置未能安全启动，已切换到核心模块。" : "服务已恢复到可用的黄金版本。",
+                        sessionId: nil, callbackURL: nil, promptURL: nil
+                    ))
+                }
+                self.lastGuardianMode = response?.effectiveMode
             }
         }
     }
@@ -233,6 +329,16 @@ final class AppStore: NSObject, ObservableObject {
                 self.guardianStatus = response ?? self.guardianStatus
                 self.guardianError = error
                 self.guardianMessage = error == nil ? success : "操作失败"
+                if error == nil && (command == "preflight" || command == "recover") {
+                    self.notificationService.publish(DesktopBridgeEvent(
+                        protocolVersion: EventBridge.protocolVersion,
+                        id: "guardian-\(command)-\(Int(Date().timeIntervalSince1970))",
+                        type: command == "recover" ? "guardian.recovered" : "guardian.preflight",
+                        title: command == "recover" ? "Guardian 恢复完成" : "Guardian 预检通过",
+                        message: success,
+                        sessionId: nil, callbackURL: nil, promptURL: nil
+                    ))
+                }
                 self.serverStatus = ServerManager.statusText()
                 if reloadWeb { self.reloadWebView() }
                 self.refreshGuardian()

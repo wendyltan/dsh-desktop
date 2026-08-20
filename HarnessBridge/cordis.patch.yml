@@ -1,0 +1,4 @@
+# Local host adapter owned and deployed by dsh-desktop.
+- insert:
+    - id: dsh-desktop-bridge
+      name: 'dsh-desktop-bridge'

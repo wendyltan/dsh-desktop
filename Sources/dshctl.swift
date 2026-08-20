@@ -22,10 +22,19 @@ struct DSHCtl {
             print(ServerManager.recentLog())
         case "guardian":
             let subcommand = args.count > 1 ? args[1] : "status"
-            let allowed = ["status", "preflight", "restart", "recover", "safe-mode", "capabilities"]
+            let allowed = ["status", "preflight", "restart", "recover", "safe-mode", "capabilities", "diff"]
             guard allowed.contains(subcommand) else {
-                print("usage: dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities>")
+                print("usage: dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>")
                 exit(2)
+            }
+            if subcommand == "diff" {
+                let (diff, error) = GuardianService.diff()
+                if let error { print("ERROR: \(error)"); exit(1) }
+                guard let diff else { print("ERROR: no diff response"); exit(1) }
+                if !diff.available { print("last-known-good: unavailable"); return }
+                print(diff.changed ? "configuration drift: yes" : "configuration drift: no")
+                for item in diff.items { print("\(item.status)\t\(item.scope)/\(item.path)") }
+                return
             }
             let (response, error) = GuardianService.run(subcommand)
             if let error { print("ERROR: \(error)"); exit(1) }
@@ -76,7 +85,7 @@ struct DSHCtl {
               dshctl balance               查看 API 余额/用量
               dshctl update-check          检查 Harness 引擎更新
               dshctl remote <dns|check|state|off>   Tailscale 远程
-              dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities>
+              dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>
               dshctl log                   查看服务日志
             """)
         }

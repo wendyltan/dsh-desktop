@@ -51,6 +51,32 @@ struct GuardianResponse: Decodable {
     }
 }
 
+struct GuardianDiffItem: Decodable, Identifiable {
+    let scope: String
+    let path: String
+    let status: String
+    var id: String { "\(scope):\(path):\(status)" }
+}
+
+struct GuardianDiffSummary: Decodable {
+    let added: Int
+    let modified: Int
+    let deleted: Int
+    let unreadable: Int
+
+    var total: Int { added + modified + deleted + unreadable }
+}
+
+struct GuardianDiffResponse: Decodable {
+    let ok: Bool
+    let available: Bool
+    let changed: Bool
+    let snapshotAt: String?
+    let summary: GuardianDiffSummary?
+    let items: [GuardianDiffItem]
+    let error: String?
+}
+
 enum GuardianService {
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
     static let executable = "\(home)/.dsh/guardian/guardian.mjs"
@@ -72,6 +98,22 @@ enum GuardianService {
             return (response, nil)
         } catch {
             return (nil, "Guardian 返回无法解析：\(error.localizedDescription)\n\(text.prefix(500))")
+        }
+    }
+
+    static func diff() -> (GuardianDiffResponse?, String?) {
+        guard isInstalled else { return (nil, "Guardian 尚未安装：\(executable)") }
+        let result = zsh("node \(shellQuote(executable)) diff --json")
+        let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = text.data(using: .utf8), !data.isEmpty else {
+            return (nil, result.stderr.isEmpty ? "Guardian 没有返回差异数据" : result.stderr)
+        }
+        do {
+            let response = try JSONDecoder().decode(GuardianDiffResponse.self, from: data)
+            if !response.ok { return (response, response.error ?? "Guardian 差异检查失败") }
+            return (response, nil)
+        } catch {
+            return (nil, "Guardian 差异返回无法解析：\(error.localizedDescription)\n\(text.prefix(500))")
         }
     }
 }

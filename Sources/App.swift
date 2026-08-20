@@ -17,6 +17,7 @@ struct DeepSeekHarnessApp: App {
                     store.startUpdateAutoCheck()
                     store.startGuardianAutoRefresh()
                     store.ensureStatusItem()
+                    store.startNativeControlSurface()
                 }
         }
         .commands {
@@ -27,6 +28,8 @@ struct DeepSeekHarnessApp: App {
                 }
                 Button("刷新页面") { store.reloadWebView() }
                     .keyboardShortcut("r", modifiers: .command)
+                Divider()
+                Button("快速提问…") { store.showQuickPrompt() }
                 Divider()
                 Button("服务保护…") { store.showGuardianPanel = true }
                 Button("检查更新…") { store.checkUpdate(force: true) }
