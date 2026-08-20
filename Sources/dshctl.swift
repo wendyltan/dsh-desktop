@@ -20,6 +20,12 @@ struct DSHCtl {
             }
         case "log":
             print(ServerManager.recentLog())
+        case "native-metrics":
+            let metrics = NativeMetricsStore.loadSnapshot()
+            print("period: \(metrics.startedAt) -> \(metrics.updatedAt)")
+            for metric in NativeMetric.allCases {
+                print("\(metric.rawValue): \(metrics.count(metric))")
+            }
         case "guardian":
             let subcommand = args.count > 1 ? args[1] : "status"
             let allowed = ["status", "preflight", "restart", "recover", "safe-mode", "capabilities", "diff"]
@@ -86,6 +92,7 @@ struct DSHCtl {
               dshctl update-check          检查 Harness 引擎更新
               dshctl remote <dns|check|state|off>   Tailscale 远程
               dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>
+              dshctl native-metrics        查看不含敏感内容的原生控制面统计
               dshctl log                   查看服务日志
             """)
         }

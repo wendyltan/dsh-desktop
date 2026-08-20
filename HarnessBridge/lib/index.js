@@ -162,6 +162,22 @@ export function apply(ctx) {
       failed.add(sessionId)
       void postDesktop({ id: `task-failed-${randomUUID()}`, type: 'task.failed', title: '任务执行失败', message: 'Harness 任务执行失败，请打开客户端查看详情。', sessionId })
     }))
+    // `session/event` is Harness's durable, versioned event stream. A step/start
+    // is a real processing boundary, so it can report progress without reading
+    // logs, inspecting message contents, or guessing from Web UI state.
+    disposers.push(ctx.on('session/event', (session, event) => {
+      const sessionId = String(session.id)
+      if (!agents.has(sessionId) || event?.type !== 'step/start') return
+      const step = Number(event.data?.step)
+      if (!Number.isInteger(step) || step < 0 || !Number.isInteger(event.seq)) return
+      void postDesktop({
+        id: `task-progress-${sessionId}-${event.seq}`,
+        type: 'task.progress',
+        title: '任务正在处理',
+        message: `已进入处理步骤 ${step + 1}。`,
+        sessionId,
+      })
+    }))
 
     // Prepend so the native answerer gets first refusal. If the desktop is not
     // reachable, or the user chooses “open task”, next() restores the official

@@ -62,6 +62,7 @@ struct GuardianPanel: View {
                     statusRow("受保护集成", "\(response?.integrations?.count ?? 0) 个")
                     statusRow("最近成功", compactDate(response?.state?.lastSuccess))
                     statusRow("原生事件", store.bridgeStatus)
+                    statusRow("任务进度", store.nativeTaskStatus)
                 }.padding(.vertical, 4)
             }
 
@@ -102,6 +103,20 @@ struct GuardianPanel: View {
                 .padding(.vertical, 4)
             }
 
+            GroupBox("原生控制面运行记录") {
+                let metrics = store.nativeMetrics
+                VStack(spacing: 8) {
+                    statusRow("通知提交", "\(metrics.count(.notificationScheduled)) / \(metrics.count(.notificationRequested)) 成功")
+                    statusRow("原生审批", "\(metrics.count(.approvalSucceeded)) 成功 · \(metrics.count(.approvalFailed)) 失败 · \(metrics.count(.approvalDeferredToWeb)) 转网页")
+                    statusRow("快速提问", "\(metrics.count(.quickPromptOpened)) 次打开 · \(metrics.count(.quickPromptSent)) 次发送 · \(metrics.count(.quickPromptFailed)) 次失败")
+                    statusRow("Guardian 恢复", "自动 \(metrics.count(.guardianAutoRecovered)) · 手动 \(metrics.count(.guardianManualRecovered)) · 安全模式 \(metrics.count(.guardianSafeMode))")
+                    statusRow("最近更新", compactDate(metrics.updatedAt))
+                    Text("仅保存在本机，不记录命令、提问内容、配置正文、密钥或会话标识。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(.vertical, 4)
+            }
+
             if let error = store.guardianError ?? response?.state?.lastError, !error.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("最近问题").font(.headline)
@@ -137,7 +152,7 @@ struct GuardianPanel: View {
             .disabled(store.guardianBusy)
         }
         .padding(22)
-        .frame(minWidth: 700, minHeight: 560)
+        .frame(minWidth: 700, minHeight: 680)
         .onAppear { store.refreshGuardian() }
         .alert(item: $pendingAction) { action in
             Alert(

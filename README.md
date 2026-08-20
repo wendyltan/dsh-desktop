@@ -12,6 +12,7 @@
 - **原生状态与操作入口**：在 macOS 顶部菜单“服务器 → 服务保护…”或右上角 DSH 状态图标中，查看模式、PID、模块数、备份和最近错误，并执行预检、安全重启、恢复或安全模式。
 - **原生控制面**：`⌥Space` 全局唤起快速提问；审批、完成、失败、Guardian 恢复和低余额使用 macOS 通知，并在通知中安全批准或拒绝。
 - **配置漂移可见**：Guardian 只返回路径和状态，不泄露配置正文；原生面板展示相对黄金版本的新增、修改、删除并可显式恢复。
+- **运行效果可观察**：原生面板和 `dshctl native-metrics` 展示通知提交、审批回调、快速提问和 Guardian 恢复计数；统计只保存在本机，不记录命令、提问内容、配置正文、密钥或会话标识。
 - **完整桌面体验**：Swift + WKWebView 承载完整 Harness Web UI，自动管理本机服务，提供余额状态、更新提醒和 `dshctl` 命令行工具。
 
 ## 两个项目如何配合
@@ -28,7 +29,7 @@
 - **Harness 原生窗口**：双击即用，自动拉起并管理 `127.0.0.1:3080` 的 `dsh web`。
 - **Guarded Boot**：隔离预检、黄金快照、失败恢复、安全模式和重启熔断。
 - **服务保护面板**：展示 Guardian 版本/协议、运行模式、服务状态、PID、模块数、黄金版本与部署备份。
-- **P0 原生事件桥**：令牌认证、仅回环监听、事件去重、交互式通知、审批 Web 回退和快速提问。
+- **P0 原生事件桥**：令牌认证、仅回环监听、事件去重、基于 Harness 正式 `step/start` 的任务进度、交互式通知、审批 Web 回退和快速提问。
 - **macOS 菜单栏状态**：显示余额与预警颜色，快速打开客户端、刷新余额、查看更新和进入服务保护。
 - **安全服务器控制**：所有客户端重启统一经过 Guardian，不再执行未经验证的“停止再启动”。
 - **`dshctl` CLI**：无需打开 GUI 也能查询状态、预检、恢复和切换安全模式。
@@ -132,6 +133,7 @@ dshctl balance               API 余额/用量
 dshctl update-check          检查 Harness 引擎更新
 dshctl remote <dns|check|state|off>   Tailscale 远程
 dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>
+dshctl native-metrics        查看不含敏感内容的原生控制面统计
 dshctl log                   查看服务日志
 ```
 
@@ -149,7 +151,7 @@ dshctl log                   查看服务日志
 ├── Sources/                # Swift 源码（GUI + dshctl 共用服务层）
 │   ├── App.swift  AppStore.swift  WebView.swift
 │   ├── GuardianService.swift  GuardianPanel.swift
-│   ├── EventBridge.swift  NotificationService.swift
+│   ├── EventBridge.swift  NotificationService.swift  NativeMetrics.swift
 │   ├── GlobalHotKey.swift  QuickPromptPanel.swift
 │   ├── RemoteService.swift  UpdateChecker.swift  AppSettings.swift
 │   ├── dshctl.swift                                     # CLI

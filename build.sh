@@ -9,6 +9,7 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/dshctl.swift Sources/Models.swift Sources/Utils.swift \
   Sources/ServerManager.swift Sources/BalanceService.swift \
   Sources/RemoteService.swift Sources/UpdateChecker.swift Sources/GuardianService.swift \
+  Sources/NativeMetrics.swift \
   -o bin/dshctl
 
 echo "== 编译 GUI =="
@@ -19,7 +20,7 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/RemoteService.swift Sources/AppSettings.swift \
   Sources/UpdateChecker.swift Sources/GuardianService.swift Sources/GuardianPanel.swift \
   Sources/EventBridge.swift Sources/NotificationService.swift Sources/GlobalHotKey.swift \
-  Sources/QuickPromptPanel.swift \
+  Sources/QuickPromptPanel.swift Sources/NativeMetrics.swift \
   -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit \
   -framework Network -framework UserNotifications -framework Carbon
 

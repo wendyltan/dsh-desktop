@@ -14,11 +14,14 @@ final class AppStore: NSObject, ObservableObject {
     private var guardianTimer: Timer?
 
     @Published var bridgeStatus = "事件桥尚未启动"
+    @Published var nativeTaskStatus = "暂无任务事件"
     @Published var nativeActionMessage = ""
+    @Published var nativeMetrics = NativeMetricsSnapshot.empty()
     private var eventBridge: EventBridge?
     private let notificationService = NotificationService()
     private let hotKey = GlobalHotKey()
     private let quickPrompt = QuickPromptPanelController()
+    private let metrics = NativeMetricsStore()
     private var nativeSurfaceStarted = false
     private var didNotifyLowBalance = false
     private var lastGuardianMode: String?
@@ -211,11 +214,16 @@ final class AppStore: NSObject, ObservableObject {
         guard !nativeSurfaceStarted else { return }
         nativeSurfaceStarted = true
 
+        nativeMetrics = metrics.snapshot
+        metrics.onChange = { [weak self] snapshot in self?.nativeMetrics = snapshot }
+
         notificationService.onOpenClient = { [weak self] in self?.showClientPanel() }
         notificationService.onActionResult = { [weak self] message in self?.nativeActionMessage = message }
+        notificationService.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         notificationService.start()
 
         quickPrompt.onOpenClient = { [weak self] in self?.showClientPanel() }
+        quickPrompt.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         quickPrompt.onSend = { [weak self] prompt, completion in
             guard let bridge = self?.eventBridge else {
                 completion(.failure(EventBridgeError.unavailable("事件桥不可用，草稿已保留。")))
@@ -235,6 +243,13 @@ final class AppStore: NSObject, ObservableObject {
             try bridge.start(onEvent: { [weak self] event in
                 guard let self else { return }
                 self.notificationService.publish(event)
+                switch event.type {
+                case "task.started": self.nativeTaskStatus = "任务已开始"
+                case "task.progress": self.nativeTaskStatus = event.message
+                case "task.completed": self.nativeTaskStatus = "最近任务已完成"
+                case "task.failed": self.nativeTaskStatus = "最近任务执行失败"
+                default: break
+                }
                 if event.type.hasPrefix("guardian.") { self.refreshGuardian() }
             }, approvalAllowed: { [weak self] in
                 self?.notificationService.canDeliverApproval() == true
@@ -304,6 +319,8 @@ final class AppStore: NSObject, ObservableObject {
                 self.guardianDiffError = diffError
                 if let mode = response?.effectiveMode, let previous = self.lastGuardianMode,
                    mode != previous, mode == "recovered" || mode == "safe" {
+                    self.metrics.record(mode == "safe" ? .guardianSafeMode : .guardianAutoRecovered,
+                                        outcome: "mode-transition")
                     self.notificationService.publish(DesktopBridgeEvent(
                         protocolVersion: EventBridge.protocolVersion,
                         id: "guardian-mode-\(mode)-\(Int(Date().timeIntervalSince1970))",
@@ -330,6 +347,7 @@ final class AppStore: NSObject, ObservableObject {
                 self.guardianError = error
                 self.guardianMessage = error == nil ? success : "操作失败"
                 if error == nil && (command == "preflight" || command == "recover") {
+                    if command == "recover" { self.metrics.record(.guardianManualRecovered, outcome: "completed") }
                     self.notificationService.publish(DesktopBridgeEvent(
                         protocolVersion: EventBridge.protocolVersion,
                         id: "guardian-\(command)-\(Int(Date().timeIntervalSince1970))",

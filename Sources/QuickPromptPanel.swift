@@ -52,6 +52,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     var onSend: ((String, @escaping (Result<Void, Error>) -> Void) -> Void)?
     var onOpenClient: (() -> Void)?
+    var onMetric: ((NativeMetric, String?) -> Void)?
 
     func toggle() {
         if panel?.isVisible == true { close(); return }
@@ -64,6 +65,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         panel.center()
         panel.makeKeyAndOrderFront(nil)
+        onMetric?(.quickPromptOpened, nil)
     }
 
     func close() { panel?.orderOut(nil) }
@@ -92,6 +94,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         let prompt = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !model.sending else { return }
         guard let onSend else {
+            onMetric?(.quickPromptFailed, "bridge-unavailable")
             model.status = "Harness 提问桥尚未连接，草稿已保留。"
             onOpenClient?()
             return
@@ -103,10 +106,12 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
             self.model.sending = false
             switch result {
             case .success:
+                self.onMetric?(.quickPromptSent, nil)
                 self.model.text = ""
                 self.model.status = "已发送"
                 self.close()
             case .failure(let error):
+                self.onMetric?(.quickPromptFailed, "send-failed")
                 self.model.status = error.localizedDescription
                 self.onOpenClient?()
             }

@@ -45,6 +45,8 @@ Harness 适配器启动后可发送一次 `bridge.connected`，并以 `promptURL
 
 适配器必须使用 Harness 的正式 `session.prompt` 与 `approval.respond` 协议完成映射；禁止监听日志、模拟 DOM 点击或把回调暴露到远端。
 
+`task.progress` 只映射 Harness 正式、持久化的 `session/event` 中的 `step/start` 边界，事件 ID 使用 session 与事件序号组成；不读取消息内容、不监听日志，也不根据页面状态猜测进度。桌面端在服务保护面板展示最近进度，但不为每一步发送系统通知。
+
 适配器会以稳定事件 ID 定期重试 `bridge.connected`。因此无论 Harness 还是客户端先启动，最终都能建立提问入口；已连接客户端会将后续心跳视为重复事件，不产生通知。
 
 ## 手工验证

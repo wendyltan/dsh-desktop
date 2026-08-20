@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-only DeepSeek Harness adapter for dsh-desktop notifications, approvals and quick prompts.",
   "type": "module",
   "main": "lib/index.js",

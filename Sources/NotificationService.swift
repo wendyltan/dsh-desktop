@@ -15,6 +15,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     var onOpenClient: (() -> Void)?
     var onActionResult: ((String) -> Void)?
+    var onMetric: ((NativeMetric, String?) -> Void)?
     var callbackToken: String?
 
     func start() {
@@ -47,6 +48,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     func publish(_ event: DesktopBridgeEvent) {
         guard event.type != "bridge.connected", event.type != "task.started", event.type != "task.progress" else { return }
+        onMetric?(.notificationRequested, event.type)
         let content = UNMutableNotificationContent()
         content.title = event.title
         content.body = event.message
@@ -59,7 +61,14 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "dsh.\(event.id)", content: content, trigger: nil)
         ) { [weak self] error in
-            if let error { DispatchQueue.main.async { self?.onActionResult?("通知发送失败：\(error.localizedDescription)") } }
+            DispatchQueue.main.async {
+                if let error {
+                    self?.onMetric?(.notificationFailed, "system-rejected")
+                    self?.onActionResult?("通知发送失败：\(error.localizedDescription)")
+                } else {
+                    self?.onMetric?(.notificationScheduled, event.type)
+                }
+            }
         }
     }
 
@@ -87,11 +96,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func answer(_ response: UNNotificationResponse, outcome: String, openAfter: Bool = false) {
+        onMetric?(.approvalAttempted, outcome)
         let info = response.notification.request.content.userInfo
         guard let text = info["callbackURL"] as? String,
               let url = EventBridge.validatedLoopbackURL(text),
               let eventId = info["eventId"] as? String else {
             DispatchQueue.main.async { [weak self] in
+                self?.onMetric?(.approvalFailed, "invalid-callback")
                 self?.onActionResult?("审批回调不可用，已打开客户端供你处理。")
                 self?.onOpenClient?()
             }
@@ -111,11 +122,14 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
             let succeeded = error == nil && (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } == true
             DispatchQueue.main.async {
                 if succeeded {
+                    self?.onMetric?(.approvalSucceeded, outcome)
+                    if outcome == "defer-to-web" { self?.onMetric?(.approvalDeferredToWeb, "user-opened-task") }
                     let message = outcome == "allowed-once" ? "已允许一次。" : (outcome == "rejected" ? "已拒绝。" : "已转到客户端处理。")
                     self?.onActionResult?(message)
                     if openAfter { self?.onOpenClient?() }
                 }
                 else {
+                    self?.onMetric?(.approvalFailed, error == nil ? "http-rejected" : "network-error")
                     self?.onActionResult?("审批未送达，仍保持待处理状态。")
                     self?.onOpenClient?()
                 }

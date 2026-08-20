@@ -68,6 +68,14 @@ try {
   assert.equal(status.status, 200)
   assert.equal(JSON.parse(status.body).ok, true)
 
+  hooks.get('session/event')[0](agent.session, {
+    type: 'step/start', seq: 42, data: { turn: 0, step: 1 },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const progress = desktopEvents.find((event) => event.type === 'task.progress')
+  assert.equal(progress.id, 'task-progress-session-verify-42')
+  assert.equal(progress.message, '已进入处理步骤 2。')
+
   const prompt = await invoke('/dsh-desktop-bridge/prompt', { protocolVersion: 1, prompt: 'verify prompt' })
   assert.equal(prompt.status, 202)
   assert.equal(followup.role, 'user')
@@ -96,7 +104,7 @@ try {
   agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-offline', callId: 'call-offline' } }]
   assert.equal(await approvalHandler({ ...request, callId: 'call-offline' }, async () => 'web-fallback'), 'web-fallback')
 
-  console.log('Harness bridge verification passed: prompt, native approval, Web fallback and offline fallback')
+  console.log('Harness bridge verification passed: durable progress, prompt, native approval, Web fallback and offline fallback')
 } finally {
   for (const dispose of disposers.reverse()) dispose()
   rmSync(root, { recursive: true, force: true })
