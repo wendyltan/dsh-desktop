@@ -37,12 +37,12 @@ struct DSHCtl {
                     print("mode: \(response.effectiveMode)")
                     print("service: \(response.up == true ? "up" : "down")")
                     print("last-known-good: \(response.lastKnownGood == true ? "yes" : "no")")
-                    print("ops-console: \(response.opsInstalled == true ? "installed" : "optional/not installed")")
+                    print("integrations: \(response.integrations?.map(\.id).joined(separator: ", ") ?? "none")")
                     if let stage = response.stage { print("stage: \(stage)") }
                 }
             }
         case "update-check":
-            let installed = UpdateChecker.currentEngine
+            let installed = UpdateChecker.resolveInstalledEngine()
             let (latest, err) = UpdateChecker.checkEngine()
             guard let latest = latest, err == nil else {
                 print("ERROR: 检查失败 \(err ?? "网络错误")")

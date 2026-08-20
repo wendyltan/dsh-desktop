@@ -56,11 +56,10 @@ struct GuardianPanel: View {
                 VStack(spacing: 10) {
                     statusRow("服务", response?.up == true ? "运行中" : "未运行")
                     statusRow("Guardian", response?.guardianVersion.map { "v\($0) · 协议 \(response?.protocolVersion ?? 0)" } ?? "未安装或不可用")
-                    statusRow("正式进程", response?.state?.pid.map(String.init) ?? "—")
+                    statusRow("正式进程", response?.pid.map(String.init) ?? response?.state?.pid.map(String.init) ?? "—")
                     statusRow("客户端模块", response?.live?.modules.map { "\($0) 个" } ?? "—")
                     statusRow("黄金版本", response?.lastKnownGood == true ? "已建立" : "尚未建立")
-                    statusRow("部署备份", "\(response?.deploymentBackups?.count ?? 0) 份")
-                    statusRow("Ops 插件", response?.opsInstalled == true ? "已安装（Web 面板可用）" : "未安装（不影响 Guardian）")
+                    statusRow("受保护集成", "\(response?.integrations?.count ?? 0) 个")
                     statusRow("最近成功", compactDate(response?.state?.lastSuccess))
                 }.padding(.vertical, 4)
             }

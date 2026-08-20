@@ -2,20 +2,19 @@
 import { spawn, spawnSync } from 'node:child_process'
 import {
   closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync,
-  readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync,
+  lstatSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync,
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const HOME = homedir()
 const DSH_HOME = process.env.DSH_HOME ?? join(HOME, '.dsh')
 const ROOT = join(DSH_HOME, 'guardian')
 const PROFILE = join(DSH_HOME, 'profiles', 'web')
 const SAFE_PROFILE = join(DSH_HOME, 'profiles', 'safe')
-const DEPLOY_ROOT = join(DSH_HOME, 'deployments', 'dsh-ops-console')
-const DEPLOY_CURRENT = join(DEPLOY_ROOT, 'current')
 const LKG = join(ROOT, 'last-known-good')
 const STATE_FILE = join(ROOT, 'state.json')
 const ENABLED_FILE = join(ROOT, 'enabled')
@@ -30,9 +29,10 @@ const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 const BASE = `http://${HOST}:${PORT}`
 const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
-const GUARDIAN_VERSION = '0.2.0'
-const PROTOCOL_VERSION = 1
-const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'recover', 'safe-mode', 'watchdog', 'snapshot']
+const GUARDIAN_VERSION = '0.3.0'
+const PROTOCOL_VERSION = 2
+const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations']
+const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
 
 mkdirSync(ROOT, { recursive: true })
 mkdirSync(LOG_DIR, { recursive: true })
@@ -61,7 +61,47 @@ function updateState(patch) { writeJsonAtomic(STATE_FILE, { ...state(), ...patch
 function profileBundles(profile = PROFILE) {
   return readJson(join(profile, 'package.json'), {})?.dsh?.profile?.bundles ?? []
 }
-function profileRequiresOps(profile = PROFILE) { return profileBundles(profile).includes('dsh-ops-console') }
+function bundlePackage(profile, id) {
+  const packageFile = join(profile, 'node_modules', ...id.split('/'), 'package.json')
+  return { packageFile, pkg: readJson(packageFile), bundleDir: dirname(packageFile) }
+}
+
+/** Optional integrations are declared by each bundle in package.json:
+ *  dsh.guardian.healthPath verifies its host route; snapshotLinkedBundle asks
+ *  Guardian to include an internal-disk linked deployment in the LKG snapshot.
+ *  Guardian therefore has no repository-specific names, paths, or endpoints. */
+function guardianIntegrations(profile = PROFILE) {
+  const integrations = []
+  for (const id of profileBundles(profile)) {
+    const { pkg, bundleDir } = bundlePackage(profile, id)
+    const declared = pkg?.dsh?.guardian
+    if (declared === null || typeof declared !== 'object' || Array.isArray(declared)) continue
+    let target = null
+    try { target = realpathSync(bundleDir) } catch {}
+    integrations.push({
+      id,
+      protocolVersion: Number(declared.protocolVersion ?? 0),
+      healthPath: typeof declared.healthPath === 'string' && /^\/(?!\/)/.test(declared.healthPath)
+        ? declared.healthPath : null,
+      snapshotLinkedBundle: declared.snapshotLinkedBundle === true,
+      profileFiles: Array.isArray(declared.profileFiles)
+        ? declared.profileFiles.filter((name) => typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name))
+        : [],
+      target,
+    })
+  }
+  return integrations
+}
+
+function isInsideDshHome(path) {
+  let base = resolve(DSH_HOME)
+  let target = resolve(path)
+  try { base = realpathSync(base) } catch {}
+  try { target = realpathSync(target) } catch {
+    try { target = join(realpathSync(dirname(target)), target.split('/').pop()) } catch {}
+  }
+  return target === base || target.startsWith(base + '/')
+}
 
 function acquireLock() {
   try { mkdirSync(LOCK_DIR); writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid)); return true } catch {}
@@ -95,18 +135,42 @@ function resolveDshBin() {
 }
 function dshEntry() { return realpathSync(resolveDshBin()) }
 
-function copyProfileFiles(source, destination) {
+/** 从实际启动的 dsh 二进制向上定位 @deepseek-ai/dsh/package.json，读取引擎版本。
+ *  与 dsh-ops-console 无关：只依赖 Guardian 自己 resolveDshBin() 的结果。
+ *  解析失败返回 null，由调用方自行回退。 */
+function detectEngineVersion() {
+  try {
+    let dir = dirname(dshEntry())
+    for (let i = 0; i < 12 && dir; i++) {
+      try {
+        const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+        if (pkg.name === '@deepseek-ai/dsh' && typeof pkg.version === 'string' && pkg.version !== '') {
+          return pkg.version
+        }
+      } catch { /* keep walking up */ }
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+  } catch { /* dsh 不可解析 */ }
+  return null
+}
+
+function copyProfileFiles(source, destination, { prune = false, extraFiles = [] } = {}) {
   mkdirSync(destination, { recursive: true })
-  for (const name of ['package.json', 'cordis.yml', 'cordis.patch.yml', '.dsh-ops.json']) {
+  for (const name of new Set([...PROFILE_FILES, ...extraFiles])) {
     const src = join(source, name)
-    if (existsSync(src)) copyFileSync(src, join(destination, name))
+    const dest = join(destination, name)
+    if (existsSync(src)) copyFileSync(src, dest)
+    else if (prune) rmSync(dest, { force: true })
   }
 }
 
 function makeScratch(profile = PROFILE) {
   const scratch = join(ROOT, 'tmp', `check-${process.pid}-${Date.now()}`)
   const scratchProfile = join(scratch, 'profiles', 'web')
-  copyProfileFiles(profile, scratchProfile)
+  const extraFiles = guardianIntegrations(profile).flatMap((item) => item.profileFiles)
+  copyProfileFiles(profile, scratchProfile, { extraFiles })
   const modules = join(profile, 'node_modules')
   if (!existsSync(modules)) throw new Error(`profile node_modules missing: ${modules}`)
   symlinkSync(modules, join(scratchProfile, 'node_modules'), 'dir')
@@ -131,14 +195,22 @@ function validateProfileFiles(profile = PROFILE) {
     const runtimePackage = runtimeModules === null ? '' : join(runtimeModules, ...parts, 'package.json')
     if (!existsSync(profilePackage) && !existsSync(runtimePackage)) issues.push(`bundle package missing: ${id}`)
   }
-  const opsLink = join(profile, 'node_modules', 'dsh-ops-console')
-  if ((bundles ?? []).includes('dsh-ops-console')) {
+  for (const id of bundles ?? []) {
+    const bundleDir = join(profile, 'node_modules', ...id.split('/'))
     try {
-      const target = realpathSync(opsLink)
-      if (target.startsWith('/Volumes/')) issues.push(`live dsh-ops-console depends on external volume: ${target}`)
-    } catch { issues.push('dsh-ops-console link is broken') }
+      if (!lstatSync(bundleDir).isSymbolicLink()) continue
+      const target = realpathSync(bundleDir)
+      if (target.startsWith('/Volumes/')) issues.push(`live bundle ${id} depends on external volume: ${target}`)
+    } catch { /* package existence was checked above */ }
   }
-  return { ok: issues.length === 0, issues, bundles: bundles ?? [] }
+  const integrations = guardianIntegrations(profile)
+  for (const item of integrations) {
+    if (item.protocolVersion !== 1) issues.push(`unsupported guardian integration protocol for ${item.id}: ${item.protocolVersion}`)
+    if (item.snapshotLinkedBundle && (item.target === null || !isInsideDshHome(item.target))) {
+      issues.push(`guardian snapshot target must be inside DSH_HOME: ${item.id}`)
+    }
+  }
+  return { ok: issues.length === 0, issues, bundles: bundles ?? [], integrations }
 }
 
 function dumpConfigCheck() {
@@ -170,7 +242,7 @@ function bootManifest(html) {
   return JSON.parse(match[1])
 }
 
-async function health(base, { requireOps = false, checkBundles = true } = {}) {
+async function health(base, { healthPaths = [], checkBundles = true } = {}) {
   const root = await fetch(`${base}/`, { signal: AbortSignal.timeout(8_000) })
   if (!root.ok) throw new Error(`root HTTP ${root.status}`)
   const boot = bootManifest(await root.text())
@@ -182,9 +254,13 @@ async function health(base, { requireOps = false, checkBundles = true } = {}) {
       if (!body.includes('window.__ModuleLoader__.load')) throw new Error(`${entry.id} registration missing`)
     }
   }
-  if (requireOps) {
-    const ops = await fetch(`${base}/dsh-ops/status`, { signal: AbortSignal.timeout(5_000) })
-    if (!ops.ok || (await ops.json()).ok !== true) throw new Error('dsh-ops status failed')
+  for (const path of healthPaths) {
+    const url = new URL(path, base)
+    if (url.origin !== new URL(base).origin) throw new Error(`integration health must stay same-origin: ${path}`)
+    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) })
+    let body = null
+    try { body = await response.json() } catch {}
+    if (!response.ok || body?.ok !== true) throw new Error(`integration health failed: ${path}`)
   }
   return { bootRev: boot.rev, modules: boot.entries.length }
 }
@@ -208,7 +284,9 @@ async function preflight({ smoke = true } = {}) {
     let lastError = 'not ready'
     while (Date.now() < deadline && child.exitCode === null) {
       try {
-        const result = await health(`http://127.0.0.1:${port}`, { requireOps: basic.bundles.includes('dsh-ops-console') })
+        const result = await health(`http://127.0.0.1:${port}`, {
+          healthPaths: basic.integrations.map((item) => item.healthPath).filter(Boolean),
+        })
         return { ok: true, stage: 'smoke', port, ...result, bundles: basic.bundles }
       } catch (error) { lastError = String(error.message ?? error) }
       await new Promise((accept) => setTimeout(accept, 500))
@@ -226,9 +304,20 @@ function snapshot() {
   const temp = `${LKG}.new`
   rmSync(temp, { recursive: true, force: true })
   mkdirSync(temp, { recursive: true })
-  copyProfileFiles(PROFILE, join(temp, 'profile'))
-  if (existsSync(DEPLOY_CURRENT)) cpSync(DEPLOY_CURRENT, join(temp, 'dsh-ops-console'), { recursive: true })
-  writeJsonAtomic(join(temp, 'manifest.json'), { createdAt: now(), profile: 'web' })
+  const integrations = guardianIntegrations()
+  const profileFiles = [...new Set(integrations.flatMap((item) => item.profileFiles))]
+  copyProfileFiles(PROFILE, join(temp, 'profile'), { extraFiles: profileFiles })
+  const savedIntegrations = []
+  mkdirSync(join(temp, 'integrations'), { recursive: true })
+  for (const item of integrations) {
+    if (!item.snapshotLinkedBundle || item.target === null || !isInsideDshHome(item.target)) continue
+    const snapshotName = Buffer.from(item.id).toString('base64url')
+    cpSync(item.target, join(temp, 'integrations', snapshotName), { recursive: true })
+    savedIntegrations.push({ id: item.id, target: item.target, snapshotName })
+  }
+  writeJsonAtomic(join(temp, 'manifest.json'), {
+    createdAt: now(), profile: 'web', profileFiles, integrations: savedIntegrations,
+  })
   const previous = `${LKG}.previous`
   rmSync(previous, { recursive: true, force: true })
   if (existsSync(LKG)) renameSync(LKG, previous)
@@ -240,15 +329,22 @@ function snapshot() {
 function restoreLkg() {
   const savedProfile = join(LKG, 'profile')
   if (!existsSync(join(savedProfile, 'package.json'))) throw new Error('last-known-good profile is missing')
-  copyProfileFiles(savedProfile, PROFILE)
-  const savedOps = join(LKG, 'dsh-ops-console')
-  if (existsSync(savedOps)) {
-    const temp = `${DEPLOY_CURRENT}.recover`
+  const manifest = readJson(join(LKG, 'manifest.json'), {})
+  const currentProfileFiles = guardianIntegrations().flatMap((item) => item.profileFiles)
+  const profileFiles = [...new Set([...(manifest.profileFiles ?? []), ...currentProfileFiles])]
+    .filter((name) => typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name))
+  copyProfileFiles(savedProfile, PROFILE, { prune: true, extraFiles: profileFiles })
+  for (const item of manifest.integrations ?? []) {
+    if (typeof item?.target !== 'string' || !isInsideDshHome(item.target)) continue
+    if (typeof item.snapshotName !== 'string' || !/^[A-Za-z0-9_-]+$/.test(item.snapshotName)) continue
+    const saved = join(LKG, 'integrations', String(item.snapshotName ?? ''))
+    if (!existsSync(saved)) continue
+    const temp = `${item.target}.recover`
     rmSync(temp, { recursive: true, force: true })
-    cpSync(savedOps, temp, { recursive: true })
-    const failed = `${DEPLOY_CURRENT}.failed-${Date.now()}`
-    if (existsSync(DEPLOY_CURRENT)) renameSync(DEPLOY_CURRENT, failed)
-    renameSync(temp, DEPLOY_CURRENT)
+    cpSync(saved, temp, { recursive: true })
+    const failed = `${item.target}.failed-${Date.now()}`
+    if (existsSync(item.target)) renameSync(item.target, failed)
+    renameSync(temp, item.target)
   }
   updateState({ lastRecovery: now() })
   return { ok: true, restored: LKG }
@@ -261,8 +357,8 @@ function ensureSafeProfile() {
     dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
   })
   writeFileSync(join(SAFE_PROFILE, 'cordis.yml'), '[]\n')
-  const patch = join(PROFILE, 'cordis.patch.yml')
-  if (existsSync(patch)) copyFileSync(patch, join(SAFE_PROFILE, 'cordis.patch.yml'))
+  // Safe mode must never inherit a malformed or plugin-specific production patch.
+  writeFileSync(join(SAFE_PROFILE, 'cordis.patch.yml'), '[]\n')
   const modules = join(SAFE_PROFILE, 'node_modules')
   try { if (existsSync(modules) || readlinkSync(modules)) unlinkSync(modules) } catch {}
   symlinkSync(join(PROFILE, 'node_modules'), modules, 'dir')
@@ -277,7 +373,9 @@ function applyRuntimePatch() {
 
 async function isUp() {
   try {
-    await health(BASE, { requireOps: state().mode !== 'safe' && profileRequiresOps(), checkBundles: false })
+    const healthPaths = state().mode === 'safe' ? []
+      : guardianIntegrations().map((item) => item.healthPath).filter(Boolean)
+    await health(BASE, { healthPaths, checkBundles: false })
     return true
   } catch { return false }
 }
@@ -319,7 +417,9 @@ async function waitHealthy(profileName) {
   let lastError = 'not ready'
   while (Date.now() < deadline) {
     try {
-      return await health(BASE, { requireOps: profileName === 'web' && profileRequiresOps() })
+      const healthPaths = profileName === 'web'
+        ? guardianIntegrations().map((item) => item.healthPath).filter(Boolean) : []
+      return await health(BASE, { healthPaths })
     } catch (error) { lastError = String(error.message ?? error) }
     await new Promise((accept) => setTimeout(accept, 500))
   }
@@ -395,14 +495,17 @@ async function watchdog() {
 async function status() {
   let up = false
   let live = null
-  try { live = await health(BASE, { requireOps: false, checkBundles: false }); up = true } catch {}
-  const backups = existsSync(join(DEPLOY_ROOT, 'backups')) ? readdirSync(join(DEPLOY_ROOT, 'backups')).sort() : []
+  try { live = await health(BASE, { checkBundles: false }); up = true } catch {}
+  let pid = null
+  if (up) {
+    const found = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim()
+    const parsed = Number(found.split(/\s+/)[0])
+    if (parsed > 1) pid = parsed
+  }
   return {
     ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION,
     capabilities: CAPABILITIES, up, url: BASE, state: state(), lastKnownGood: existsSync(LKG),
-    opsInstalled: profileRequiresOps(),
-    deployment: existsSync(DEPLOY_CURRENT) ? DEPLOY_CURRENT : null,
-    deploymentBackups: backups, live,
+    engine: detectEngineVersion(), pid, integrations: guardianIntegrations(), live,
   }
 }
 
@@ -459,8 +562,12 @@ async function main() {
   } finally { releaseLock() }
 }
 
-try { await main() } catch (error) {
-  const result = { ok: false, error: String(error?.stack ?? error) }
-  output(result)
-  process.exitCode = 1
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { await main() } catch (error) {
+    const result = { ok: false, error: String(error?.stack ?? error) }
+    output(result)
+    process.exitCode = 1
+  }
 }
+
+export { copyProfileFiles, ensureSafeProfile, guardianIntegrations, restoreLkg, snapshot, validateProfileFiles }

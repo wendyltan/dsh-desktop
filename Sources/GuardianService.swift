@@ -15,6 +15,14 @@ struct GuardianLiveState: Decodable {
     let modules: Int?
 }
 
+struct GuardianIntegrationState: Decodable {
+    let id: String
+    let protocolVersion: Int?
+    let healthPath: String?
+    let snapshotLinkedBundle: Bool?
+    let target: String?
+}
+
 struct GuardianResponse: Decodable {
     let ok: Bool
     let guardianVersion: String?
@@ -22,13 +30,12 @@ struct GuardianResponse: Decodable {
     let capabilities: [String]?
     let up: Bool?
     let url: String?
+    let engine: String?
     let state: GuardianRuntimeState?
     let mode: String?
     let pid: Int?
     let lastKnownGood: Bool?
-    let opsInstalled: Bool?
-    let deployment: String?
-    let deploymentBackups: [String]?
+    let integrations: [GuardianIntegrationState]?
     let live: GuardianLiveState?
     let stage: String?
     let issues: [String]?

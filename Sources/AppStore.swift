@@ -311,8 +311,8 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 检查 npm 上 harness 引擎是否有新版本。force=true 时无论结果都弹窗。
     func checkUpdate(force: Bool = false) {
-        let installed = UpdateChecker.currentEngine
         DispatchQueue.global(qos: .utility).async {
+            let installed = UpdateChecker.resolveInstalledEngine()
             let (latest, err) = UpdateChecker.checkEngine()
             DispatchQueue.main.async {
                 guard let latest = latest, err == nil else {
