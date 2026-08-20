@@ -45,6 +45,8 @@ Harness 适配器启动后可发送一次 `bridge.connected`，并以 `promptURL
 
 适配器必须使用 Harness 的正式 `session.prompt` 与 `approval.respond` 协议完成映射；禁止监听日志、模拟 DOM 点击或把回调暴露到远端。
 
+适配器会以稳定事件 ID 定期重试 `bridge.connected`。因此无论 Harness 还是客户端先启动，最终都能建立提问入口；已连接客户端会将后续心跳视为重复事件，不产生通知。
+
 ## 手工验证
 
 客户端运行时，可以使用 `Scripts/send-event.mjs` 注入一条测试事件。脚本只用于协议诊断，不属于 Harness 运行依赖。

@@ -192,13 +192,16 @@ export function apply(ctx) {
       return outcome === 'defer-to-web' ? next() : outcome
     }, { prepend: true }))
 
-    void postDesktop({
-      id: `bridge-connected-${randomUUID()}`, type: 'bridge.connected',
+    const announce = () => void postDesktop({
+      id: `bridge-connected-${process.pid}`, type: 'bridge.connected',
       title: 'Harness 已连接', message: '原生控制面已连接。',
       promptURL: `http://127.0.0.1:${PORT}/dsh-desktop-bridge/prompt`,
     })
+    announce()
+    const reconnectTimer = setInterval(announce, 15_000)
 
     return () => {
+      clearInterval(reconnectTimer)
       for (const item of pending.values()) item.resolve('cancelled')
       pending.clear()
       for (const dispose of disposers.reverse()) dispose()

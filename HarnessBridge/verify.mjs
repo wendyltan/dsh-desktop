@@ -62,6 +62,7 @@ try {
   bridge.apply(ctx)
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(desktopEvents.some((event) => event.type === 'bridge.connected'), true)
+  assert.equal(desktopEvents.find((event) => event.type === 'bridge.connected').id, `bridge-connected-${process.pid}`)
 
   const status = await invoke('/dsh-desktop-bridge/status')
   assert.equal(status.status, 200)
