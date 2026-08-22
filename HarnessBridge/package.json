@@ -11,6 +11,11 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "market": {
+      "visibility": "system",
+      "owner": "dsh-desktop",
+      "userManageable": false
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },

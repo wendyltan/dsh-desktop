@@ -25,6 +25,8 @@ const LOG_DIR = join(DSH_HOME, 'logs')
 const LOG_FILE = join(LOG_DIR, 'dsh-web.log')
 const PID_FILE = join(LOG_DIR, 'dsh-web.pid')
 const GUARDIAN_LOG = join(LOG_DIR, 'dsh-guardian.log')
+const UPDATE_STATE_FILE = join(ROOT, 'update.json')
+const OPERATION_STATE_FILE = join(ROOT, 'operation.json')
 const HOST = process.env.DSH_WEB_HOST ?? '127.0.0.1'
 const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 const BASE = `http://${HOST}:${PORT}`
@@ -32,13 +34,33 @@ const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
 const GUARDIAN_VERSION = '0.3.0'
 const PROTOCOL_VERSION = 2
-const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations', 'diff']
+const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'update', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations', 'diff']
 const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
+const ENGINE_STATE_FILE = join(ROOT, 'engine.json')
+const ENGINE_ROOT = join(ROOT, 'engines')
 
 mkdirSync(ROOT, { recursive: true })
 mkdirSync(LOG_DIR, { recursive: true })
 
 function now() { return new Date().toISOString() }
+let activeOperation = null
+function operationProgress(percent, message, phase = 'running') {
+  if (activeOperation === null) return
+  writeFileSync(OPERATION_STATE_FILE, JSON.stringify({
+    command: activeOperation, phase, percent, message, updatedAt: now(),
+  }) + '\n')
+}
+function beginOperation(command, message) {
+  activeOperation = command
+  operationProgress(5, message)
+}
+function finishOperation(result, successMessage) {
+  operationProgress(result?.ok === true ? 100 : 100,
+    result?.ok === true ? successMessage : (result?.error ?? result?.issues?.join('; ') ?? '操作失败'),
+    result?.ok === true ? 'completed' : 'failed')
+  activeOperation = null
+  return result
+}
 function log(message) {
   const line = `[${now()}] ${message}\n`
   writeFileSync(GUARDIAN_LOG, line, { flag: 'a' })
@@ -59,6 +81,10 @@ function state() {
   return readJson(STATE_FILE, { mode: 'unknown', failures: [], lastSuccess: null, lastError: null })
 }
 function updateState(patch) { writeJsonAtomic(STATE_FILE, { ...state(), ...patch, updatedAt: now() }) }
+function updateProgress(patch) {
+  if (patch === null) { rmSync(UPDATE_STATE_FILE, { force: true }); return }
+  writeJsonAtomic(UPDATE_STATE_FILE, { ...(readJson(UPDATE_STATE_FILE, {}) ?? {}), ...patch, updatedAt: now() })
+}
 function profileBundles(profile = PROFILE) {
   return readJson(join(profile, 'package.json'), {})?.dsh?.profile?.bundles ?? []
 }
@@ -119,7 +145,10 @@ function acquireLock() {
 function releaseLock() { rmSync(LOCK_DIR, { recursive: true, force: true }) }
 
 function resolveDshBin() {
-  const candidates = [join(PROFILE, 'node_modules', '.bin', 'dsh')]
+  const selected = readJson(ENGINE_STATE_FILE)
+  const selectedBin = selected?.active
+  const candidates = selectedBin && isInsideDshHome(selectedBin) ? [selectedBin] : []
+  candidates.push(join(PROFILE, 'node_modules', '.bin', 'dsh'))
   const npxRoot = join(HOME, '.npm', '_npx')
   try {
     const caches = readdirSync(npxRoot)
@@ -135,6 +164,118 @@ function resolveDshBin() {
   return found
 }
 function dshEntry() { return realpathSync(resolveDshBin()) }
+
+function validEngineVersion(value) {
+  return typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)
+}
+
+function installEngine(version) {
+  if (!validEngineVersion(version)) throw new Error(`invalid engine version: ${version}`)
+  mkdirSync(ENGINE_ROOT, { recursive: true })
+  const target = join(ENGINE_ROOT, `${version}-${Date.now()}`)
+  mkdirSync(target, { recursive: true })
+  const npm = spawnSync('which', ['npm'], { encoding: 'utf8' }).stdout.trim() || 'npm'
+  const packageSpec = `@deepseek-ai/dsh@${version}`
+  return new Promise((resolvePromise, rejectPromise) => {
+    const output = []
+    let settled = false
+    let timer
+    const finish = (error, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) {
+        rmSync(target, { recursive: true, force: true })
+        rejectPromise(error)
+      } else resolvePromise(value)
+    }
+    const child = spawn(npm, [
+      'install', '--prefix', target, '--no-save', '--no-package-lock', '--ignore-scripts',
+      '--loglevel', 'notice', '--fetch-timeout', '120000', '--fetch-retries', '2', packageSpec,
+    ], { env: { ...process.env, npm_config_progress: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] })
+    const collect = (chunk) => {
+      const text = String(chunk).trim()
+      if (text) output.push(text)
+    }
+    child.stdout.on('data', collect)
+    child.stderr.on('data', collect)
+    child.on('error', (error) => finish(new Error(`npm 启动失败：${error.message}`)))
+    child.on('close', (code, signal) => {
+      const bin = join(target, 'node_modules', '.bin', 'dsh')
+      const packageFile = join(target, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+      const packageJson = readJson(packageFile)
+      if (code !== 0 || !existsSync(bin) || packageJson?.version !== version) {
+        const detail = output.join('\n').slice(-1200)
+        finish(new Error(`engine install failed (exit=${code ?? 'null'}, signal=${signal ?? 'none'})${detail ? `: ${detail}` : ''}`))
+        return
+      }
+      finish(null, { target, bin, version })
+    })
+    timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      finish(new Error(`engine install timed out after 15 minutes; npm output: ${output.join('\n').slice(-800)}`))
+    }, 900_000)
+  })
+}
+
+async function updateEngine(version) {
+  const current = detectEngineVersion()
+  if (current === version) return { ok: true, updated: false, alreadyCurrent: true, version }
+  updateProgress({ phase: 'preparing', percent: 0, version, fromVersion: current, message: `准备更新引擎 ${version}` })
+  const previous = readJson(ENGINE_STATE_FILE)
+  updateProgress({ phase: 'downloading', percent: 10, version, message: '正在下载引擎及其依赖（预计需要几分钟）' })
+  let installed
+  try { installed = await installEngine(version) } catch (error) {
+    updateProgress({ phase: 'failed', percent: 0, version, message: error.message })
+    throw error
+  }
+  writeJsonAtomic(ENGINE_STATE_FILE, { active: installed.bin, version, previous })
+
+  updateProgress({ phase: 'preflight', percent: 65, version, message: '下载完成，正在执行隔离预检' })
+  const checked = await preflight()
+  if (!checked.ok) {
+    const reason = (checked.issues ?? ['未知错误'])
+      .map((item) => String(item).replace(/\s+/g, ' ').trim().slice(0, 360))
+      .filter(Boolean)
+      .join('; ')
+    if (previous) writeJsonAtomic(ENGINE_STATE_FILE, previous)
+    else rmSync(ENGINE_STATE_FILE, { force: true })
+    rmSync(installed.target, { recursive: true, force: true })
+    const error = `引擎 ${version} 未通过隔离预检：${reason}`
+    updateProgress({ phase: 'rolled-back', percent: 0, version, message: `预检未通过，已保留当前引擎：${reason}` })
+    return { ok: false, updated: false, stage: checked.stage, issues: checked.issues, error, rolledBack: true }
+  }
+
+  updateProgress({ phase: 'restarting', percent: 90, version, message: '预检通过，正在安全重启服务' })
+  let restarted
+  try {
+    restarted = await restartSafely()
+  } catch (error) {
+    restarted = { ok: false, error: String(error?.message ?? error) }
+    log(`engine switch failed: ${restarted.error}`)
+  }
+  const live = detectEngineVersion()
+  if (restarted.ok && restarted.mode === 'production' && live === version) {
+    updateProgress({ phase: 'completed', percent: 100, version, message: `引擎已更新到 ${version}` })
+    return { ...restarted, updated: true, fromVersion: current, toVersion: version }
+  }
+
+  if (previous) writeJsonAtomic(ENGINE_STATE_FILE, previous)
+  else rmSync(ENGINE_STATE_FILE, { force: true })
+  rmSync(installed.target, { recursive: true, force: true })
+  let rollback = null
+  let rollbackError = null
+  try { rollback = await startProduction() } catch (error) { rollbackError = String(error?.message ?? error) }
+  const rollbackMessage = rollback?.ok === true
+    ? '新引擎启动未通过，已恢复旧引擎'
+    : `新引擎启动未通过，旧引擎恢复失败：${rollbackError ?? '服务未能启动'}`
+  updateProgress({ phase: 'rolled-back', percent: 0, version, message: rollbackMessage })
+  return {
+    ok: false, updated: false, rolledBack: rollback?.ok === true,
+    fromVersion: current, toVersion: version, restart: restarted, rollback, rollbackError,
+    error: rollbackMessage,
+  }
+}
 
 /** 从实际启动的 dsh 二进制向上定位 @deepseek-ai/dsh/package.json，读取引擎版本。
  *  与 dsh-ops-console 无关：只依赖 Guardian 自己 resolveDshBin() 的结果。
@@ -172,6 +313,8 @@ function makeScratch(profile = PROFILE) {
   const scratchProfile = join(scratch, 'profiles', 'web')
   const extraFiles = guardianIntegrations(profile).flatMap((item) => item.profileFiles)
   copyProfileFiles(profile, scratchProfile, { extraFiles })
+  const credentials = join(DSH_HOME, '.credentials.yaml')
+  if (existsSync(credentials)) copyFileSync(credentials, join(scratch, '.credentials.yaml'))
   const modules = join(profile, 'node_modules')
   if (!existsSync(modules)) throw new Error(`profile node_modules missing: ${modules}`)
   symlinkSync(modules, join(scratchProfile, 'node_modules'), 'dir')
@@ -237,10 +380,46 @@ async function freePort() {
   })
 }
 
+function parseJsonValueAt(text, start) {
+  let cursor = start
+  while (/\s/.test(text[cursor] ?? '')) cursor += 1
+  if (text[cursor] !== '{' && text[cursor] !== '[') return null
+
+  const opening = text[cursor]
+  const closing = opening === '{' ? '}' : ']'
+  let depth = 0
+  let quote = false
+  let escaped = false
+  for (let index = cursor; index < text.length; index += 1) {
+    const character = text[index]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') quote = false
+      continue
+    }
+    if (character === '"') { quote = true; continue }
+    if (character === opening) depth += 1
+    else if (character === closing) {
+      depth -= 1
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(cursor, index + 1)) } catch { return null }
+      }
+    }
+  }
+  return null
+}
+
 function bootManifest(html) {
-  const match = html.match(/window\.__DSH_BOOT__\s*=\s*(\{.*?\})\s*<\/script>/s)
-  if (!match) throw new Error('boot manifest missing')
-  return JSON.parse(match[1])
+  // rc.8 used `window.__DSH_BOOT__`; rc.1 renders structured globals as
+  // `globalThis["__DSH_BOOT__"]`. Keep both wire forms accepted by Guardian.
+  const assignment = /(?:window\.__DSH_BOOT__|globalThis\.__DSH_BOOT__|globalThis\[\s*["']__DSH_BOOT__["']\s*\])\s*=\s*/g
+  let match
+  while ((match = assignment.exec(html)) !== null) {
+    const boot = parseJsonValueAt(html, assignment.lastIndex)
+    if (boot && typeof boot === 'object' && Array.isArray(boot.entries)) return boot
+  }
+  throw new Error('boot manifest missing')
 }
 
 async function health(base, { healthPaths = [], checkBundles = true } = {}) {
@@ -269,12 +448,17 @@ async function health(base, { healthPaths = [], checkBundles = true } = {}) {
 async function preflight({ smoke = true } = {}) {
   const basic = validateProfileFiles()
   if (!basic.ok) return { ok: false, stage: 'files', ...basic }
+  applyRuntimePatch()
   try { dumpConfigCheck() } catch (error) { return { ok: false, stage: 'compose', issues: [String(error.message ?? error)] } }
   if (!smoke) return { ok: true, stage: 'compose', bundles: basic.bundles }
   const { scratch } = makeScratch()
   const port = await freePort()
-  const out = openSync(join(ROOT, 'smoke.out.log'), 'a')
-  const err = openSync(join(ROOT, 'smoke.err.log'), 'a')
+  const smokeOut = join(ROOT, 'smoke.out.log')
+  const smokeErr = join(ROOT, 'smoke.err.log')
+  const outOffset = existsSync(smokeOut) ? statSync(smokeOut).size : 0
+  const errOffset = existsSync(smokeErr) ? statSync(smokeErr).size : 0
+  const out = openSync(smokeOut, 'a')
+  const err = openSync(smokeErr, 'a')
   const child = spawn(process.execPath, [dshEntry(), '--profile', 'web', '--host', '127.0.0.1', '--port', String(port)], {
     env: { ...process.env, DSH_HOME: scratch }, stdio: ['ignore', out, err],
   })
@@ -292,7 +476,14 @@ async function preflight({ smoke = true } = {}) {
       } catch (error) { lastError = String(error.message ?? error) }
       await new Promise((accept) => setTimeout(accept, 500))
     }
-    return { ok: false, stage: 'smoke', issues: [lastError, `exit=${child.exitCode ?? 'running'}`] }
+    const readTail = (path, offset) => {
+      try { return readFileSync(path, 'utf8').slice(offset).trim().slice(-2_000) } catch { return '' }
+    }
+    const detail = readTail(smokeErr, errOffset) || readTail(smokeOut, outOffset)
+    return {
+      ok: false, stage: 'smoke',
+      issues: [lastError, detail, `exit=${child.exitCode ?? 'running'}`].filter(Boolean),
+    }
   } finally {
     if (child.exitCode === null) child.kill('SIGTERM')
     await new Promise((accept) => setTimeout(accept, 600))
@@ -566,9 +757,12 @@ async function startProduction({ alreadyChecked = false } = {}) {
 }
 
 async function restartSafely() {
+  operationProgress(15, '正在隔离预检正式配置…')
   const checked = await preflight()
   if (!checked.ok) return { ok: false, stopped: false, stage: checked.stage, issues: checked.issues }
+  operationProgress(55, '预检通过，正在建立恢复快照…')
   snapshot()
+  operationProgress(70, '正在安全重启 Harness…')
   return await startProduction({ alreadyChecked: true })
 }
 
@@ -595,6 +789,8 @@ async function status() {
     ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION,
     capabilities: CAPABILITIES, up, url: BASE, state: state(), lastKnownGood: existsSync(LKG),
     engine: detectEngineVersion(), pid, integrations: guardianIntegrations(), live,
+    update: readJson(UPDATE_STATE_FILE),
+    operation: readJson(OPERATION_STATE_FILE),
   }
 }
 
@@ -605,7 +801,8 @@ async function main() {
   if (command === 'status') return output(await status())
   if (command === 'diff') return output(configDiff())
   if (command === 'preflight') {
-    const result = await preflight({ smoke: !process.argv.includes('--quick') })
+    beginOperation('preflight', '正在隔离预检正式配置…')
+    const result = finishOperation(await preflight({ smoke: !process.argv.includes('--quick') }), '完整预检通过。')
     output(result)
     if (!result.ok) process.exitCode = 1
     return
@@ -629,13 +826,24 @@ async function main() {
     if (command === 'restart') {
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
-      return output(await restartSafely())
+      beginOperation('restart', '准备安全重启…')
+      return output(finishOperation(await restartSafely(), '安全重启完成。'))
+    }
+    if (command === 'update') {
+      const index = process.argv.indexOf('--version')
+      const version = index >= 0 ? process.argv[index + 1] : null
+      if (!validEngineVersion(version)) return output({ ok: false, error: 'update requires --version <semver>' })
+      writeFileSync(ENABLED_FILE, now() + '\n')
+      rmSync(MAINTENANCE_FILE, { force: true })
+      return output(await updateEngine(version))
     }
     if (command === 'recover') {
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
+      beginOperation('recover', '正在恢复黄金版本…')
       restoreLkg()
-      return output(await startProduction())
+      operationProgress(65, '黄金版本已恢复，正在安全启动…')
+      return output(finishOperation(await startProduction(), '黄金版本已恢复并启动。'))
     }
     if (command === 'safe-mode') {
       writeFileSync(ENABLED_FILE, now() + '\n')
@@ -654,10 +862,11 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await main() } catch (error) {
-    const result = { ok: false, error: String(error?.stack ?? error) }
+    log(`command failed: ${String(error?.stack ?? error)}`)
+    const result = { ok: false, error: String(error?.message ?? error) }
     output(result)
     process.exitCode = 1
   }
 }
 
-export { configDiff, copyProfileFiles, ensureSafeProfile, guardianIntegrations, restoreLkg, snapshot, validateProfileFiles }
+export { bootManifest, configDiff, copyProfileFiles, ensureSafeProfile, guardianIntegrations, restoreLkg, snapshot, validateProfileFiles }

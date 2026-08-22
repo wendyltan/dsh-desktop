@@ -8,7 +8,7 @@ echo "== 编译 dshctl =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/dshctl.swift Sources/Models.swift Sources/Utils.swift \
   Sources/ServerManager.swift Sources/BalanceService.swift \
-  Sources/RemoteService.swift Sources/UpdateChecker.swift Sources/GuardianService.swift \
+  Sources/UpdateChecker.swift Sources/GuardianService.swift \
   Sources/NativeMetrics.swift \
   -o bin/dshctl
 
@@ -17,7 +17,7 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/App.swift Sources/AppStore.swift Sources/WebView.swift \
   Sources/Models.swift Sources/Utils.swift Sources/ServerManager.swift \
   Sources/BalanceService.swift \
-  Sources/RemoteService.swift Sources/AppSettings.swift \
+  Sources/AppSettings.swift \
   Sources/UpdateChecker.swift Sources/GuardianService.swift Sources/GuardianPanel.swift \
   Sources/EventBridge.swift Sources/NotificationService.swift Sources/GlobalHotKey.swift \
   Sources/QuickPromptPanel.swift Sources/NativeMetrics.swift \

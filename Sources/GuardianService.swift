@@ -23,6 +23,22 @@ struct GuardianIntegrationState: Decodable {
     let target: String?
 }
 
+struct GuardianUpdateState: Decodable {
+    let phase: String?
+    let percent: Int?
+    let version: String?
+    let message: String?
+    let updatedAt: String?
+}
+
+struct GuardianOperationState: Decodable {
+    let command: String?
+    let phase: String?
+    let percent: Int?
+    let message: String?
+    let updatedAt: String?
+}
+
 struct GuardianResponse: Decodable {
     let ok: Bool
     let guardianVersion: String?
@@ -42,10 +58,19 @@ struct GuardianResponse: Decodable {
     let action: String?
     let reason: String?
     let error: String?
+    let updated: Bool?
+    let alreadyCurrent: Bool?
+    let fromVersion: String?
+    let toVersion: String?
+    let rolledBack: Bool?
+    let rollbackError: String?
+    let update: GuardianUpdateState?
+    let operation: GuardianOperationState?
 
     var effectiveMode: String { mode ?? state?.mode ?? "unknown" }
     var displayError: String? {
         if let error, !error.isEmpty { return error }
+        if let rollbackError, !rollbackError.isEmpty { return rollbackError }
         if let issues, !issues.isEmpty { return issues.joined(separator: "\n") }
         return nil
     }
@@ -86,8 +111,13 @@ enum GuardianService {
     }
 
     static func run(_ command: String) -> (GuardianResponse?, String?) {
+        run(command, args: [])
+    }
+
+    static func run(_ command: String, args: [String]) -> (GuardianResponse?, String?) {
         guard isInstalled else { return (nil, "Guardian 尚未安装：\(executable)") }
-        let result = zsh("node \(shellQuote(executable)) \(shellQuote(command)) --json")
+        let arguments = ([command] + args).map(shellQuote).joined(separator: " ")
+        let result = zsh("node \(shellQuote(executable)) \(arguments) --json")
         let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = text.data(using: .utf8), !data.isEmpty else {
             return (nil, result.stderr.isEmpty ? "Guardian 没有返回数据" : result.stderr)

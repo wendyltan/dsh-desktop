@@ -105,6 +105,9 @@ final class AppStore: NSObject, ObservableObject {
 
     private var statusItem: NSStatusItem?
     private var updateMenuItem: NSMenuItem?
+    private var desktopVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "开发版"
+    }
 
     /// 创建菜单栏状态项（应用启动时调用一次）。
     func ensureStatusItem() {
@@ -119,6 +122,10 @@ final class AppStore: NSObject, ObservableObject {
             button.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
         }
         let menu = NSMenu()
+        let version = NSMenuItem(title: "DeepSeek Harness v\(desktopVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
+        menu.addItem(.separator())
         let open = NSMenuItem(title: "打开客户端面板", action: #selector(menuShowClientPanel), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
@@ -152,8 +159,8 @@ final class AppStore: NSObject, ObservableObject {
     /// 有新版本时，把「检查更新」菜单项改成提示文案。
     func refreshUpdateMenuItem() {
         guard let item = updateMenuItem else { return }
-        if updateAvailable, let v = updateVersion {
-            item.title = "🆕 有新版本 \(v)，点击查看"
+        if updateInstallAvailable, let v = updateVersion {
+            item.title = updateBusy ? "正在更新引擎…" : "🆕 有新版本 \(v)，点击更新"
         } else {
             item.title = "检查更新"
         }
@@ -201,7 +208,10 @@ final class AppStore: NSObject, ObservableObject {
     @objc private func menuShowClientPanel() { showClientPanel() }
     @objc private func menuQuickPrompt() { quickPrompt.toggle() }
     @objc private func menuRefreshBalance() { refreshBalance() }
-    @objc private func menuCheckUpdate() { checkUpdate(force: true) }
+    @objc private func menuCheckUpdate() {
+        if updateInstallAvailable { performEngineUpdate() }
+        else { checkUpdate(force: true) }
+    }
     @objc private func menuQuit() { NSApp.terminate(nil) }
     @objc private func menuShowProtection() {
         showGuardianPanel = true
@@ -380,58 +390,18 @@ final class AppStore: NSObject, ObservableObject {
         runGuardian("safe-mode", success: "已进入安全模式。", reloadWeb: true)
     }
 
-    // MARK: - Tailscale 远程访问
-
-    @Published var remoteEnabled = false
-    @Published var remoteBusy = false
-    @Published var remoteStatus = "远程：关"
-
-    /// 从 remoteStatus 里提取第一个链接（用于「打开链接」按钮）。
-    func remoteLink() -> String? {
-        guard let range = remoteStatus.range(of: #"https://[^\s]+"#, options: .regularExpression) else { return nil }
-        return String(remoteStatus[range])
-    }
-
-    func refreshRemoteState() {
-        remoteEnabled = RemoteService.isServeActive()
-        remoteStatus = remoteEnabled ? "远程：开" : "远程：关"
-    }
-
-    /// 开启远程访问（会重启服务，需用户确认后调用）。
-    func enableRemote() {
-        remoteBusy = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = RemoteService.enable()
-            DispatchQueue.main.async {
-                self.remoteBusy = false
-                self.remoteEnabled = RemoteService.isServeActive()
-                self.remoteStatus = msg
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
-            }
-        }
-    }
-
-    /// 关闭远程访问（tailscale 侧，不重启服务）。
-    func disableRemote() {
-        remoteBusy = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (_, msg) = RemoteService.disableServe()
-            DispatchQueue.main.async {
-                self.remoteBusy = false
-                self.remoteEnabled = false
-                self.remoteStatus = msg
-            }
-        }
-    }
-
     // MARK: - 自动更新检查
 
     @Published var updateAvailable = false
+    /// 是否仍可执行升级；不受“以后再说”提醒开关影响。
+    @Published var updateInstallAvailable = false
     @Published var updateVersion: String?
+    @Published var updateBusy = false
+    @Published var updateProgressPercent: Int?
     @Published var showUpdateAlert = false
     @Published var updateMessage = ""
     private var updateTimer: Timer?
+    private var engineProgressTimer: Timer?
 
     /// 检查 npm 上 harness 引擎是否有新版本。force=true 时无论结果都弹窗。
     func checkUpdate(force: Bool = false) {
@@ -439,6 +409,13 @@ final class AppStore: NSObject, ObservableObject {
             let installed = UpdateChecker.resolveInstalledEngine()
             let (latest, err) = UpdateChecker.checkEngine()
             DispatchQueue.main.async {
+                guard let installed else {
+                    self.updateInstallAvailable = false
+                    self.updateAvailable = false
+                    self.updateMessage = "检查更新失败：未能识别当前运行的 Harness 引擎版本。"
+                    if force { self.showUpdateAlert = true }
+                    return
+                }
                 guard let latest = latest, err == nil else {
                     self.updateMessage = "检查更新失败：\(err ?? "网络错误")"
                     if force { self.showUpdateAlert = true }
@@ -448,12 +425,71 @@ final class AppStore: NSObject, ObservableObject {
                 self.settings.save()
                 self.updateVersion = latest
                 let newer = UpdateChecker.isNewer(latest, than: installed)
+                self.updateInstallAvailable = newer
                 self.updateAvailable = newer && self.settings.dismissedUpdateVersion != latest
                 self.refreshUpdateMenuItem()
                 self.updateMessage = newer
-                    ? "发现新版本：Harness 引擎 \(latest)（当前 \(installed)）\n\n升级方式：在终端运行 ~/.dsh/dsh-desktop/build.sh，或更新 launch.sh 中的版本号后重启服务。"
+                    ? "发现新版本：Harness 引擎 \(latest)（当前 \(installed)）\n\n点击“一键更新”后，客户端会先下载并预检新引擎；通过后才切换并安全重启。"
                     : "已是最新版本（\(installed)）。"
                 if force { self.showUpdateAlert = true }
+            }
+        }
+    }
+
+    /// 由桌面客户端委托 Guardian 完成引擎安装、预检、切换和安全重启。
+    /// dsh-ops 只显示状态，不直接修改核心引擎。
+    func performEngineUpdate() {
+        guard !updateBusy, updateInstallAvailable, let version = updateVersion else { return }
+        updateBusy = true
+        updateProgressPercent = 10
+        showUpdateAlert = false
+        updateMessage = "正在下载并预检 Harness 引擎 \(version)…"
+        refreshUpdateMenuItem()
+        startEngineProgressPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (response, error) = GuardianService.run("update", args: ["--version", version])
+            DispatchQueue.main.async {
+                self.updateBusy = false
+                self.updateProgressPercent = nil
+                self.engineProgressTimer?.invalidate()
+                self.engineProgressTimer = nil
+                self.refreshUpdateMenuItem()
+                if let error {
+                    self.updateMessage = "引擎更新失败：\(error)"
+                    self.showUpdateAlert = true
+                    return
+                }
+                if response?.updated == true, response?.effectiveMode == "production" {
+                    self.updateAvailable = false
+                    self.updateInstallAvailable = false
+                    self.updateMessage = "Harness 引擎已更新到 \(version)，服务已安全重启。"
+                    self.refreshUpdateMenuItem()
+                    self.serverStatus = ServerManager.statusText()
+                    self.refreshGuardian()
+                    self.showUpdateAlert = true
+                } else {
+                    self.updateMessage = response?.displayError ?? "引擎更新未完成，当前服务保持原版本。"
+                    self.showUpdateAlert = true
+                }
+            }
+        }
+    }
+
+    private func startEngineProgressPolling() {
+        engineProgressTimer?.invalidate()
+        engineProgressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, self.updateBusy else { return }
+            DispatchQueue.global(qos: .utility).async {
+                let (status, _) = GuardianService.run("status")
+                guard let progress = status?.update else { return }
+                DispatchQueue.main.async {
+                    guard self.updateBusy else { return }
+                    if let message = progress.message, !message.isEmpty {
+                        self.updateProgressPercent = progress.percent
+                        let suffix = progress.percent.map { "（\($0)%）" } ?? ""
+                        self.updateMessage = "\(message)\(suffix)"
+                    }
+                }
             }
         }
     }

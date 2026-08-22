@@ -12,7 +12,6 @@ struct DeepSeekHarnessApp: App {
                 .frame(minWidth: 980, minHeight: 640)
                 .onAppear {
                     store.ensureServerRunning()
-                    store.refreshRemoteState()
                     store.startBalanceAutoRefresh()
                     store.startUpdateAutoCheck()
                     store.startGuardianAutoRefresh()
@@ -21,6 +20,11 @@ struct DeepSeekHarnessApp: App {
                 }
         }
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("关于 DeepSeek Harness") {
+                    NSApp.orderFrontStandardAboutPanel(options: [:])
+                }
+            }
             CommandGroup(replacing: .newItem) {}
             CommandMenu("服务器") {
                 Button("在浏览器中打开") {
@@ -47,11 +51,23 @@ struct ContentView: View {
     var body: some View {
         WebView(url: URL(string: ServerManager.url)!, reloadToken: store.reloadToken)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .top) {
+                if store.updateBusy {
+                    EngineUpdateProgressView(
+                        message: store.updateMessage,
+                        percent: store.updateProgressPercent
+                    )
+                    .padding(.top, 12)
+                }
+            }
             .sheet(isPresented: $store.showGuardianPanel) {
                 GuardianPanel().environmentObject(store)
             }
             .alert("更新检查", isPresented: $store.showUpdateAlert) {
-            if store.updateAvailable {
+            if store.updateInstallAvailable {
+                Button("一键更新") {
+                    store.performEngineUpdate()
+                }
                 Button("打开 npm 页面") {
                     NSWorkspace.shared.open(URL(string: UpdateChecker.npmPage)!)
                 }
@@ -61,5 +77,35 @@ struct ContentView: View {
         } message: {
             Text(store.updateMessage)
         }
+    }
+}
+
+struct EngineUpdateProgressView: View {
+    let message: String
+    let percent: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "arrow.down.circle.fill")
+                Text("正在更新 Harness 引擎").fontWeight(.semibold)
+                Spacer()
+                if let percent { Text("\(percent)%").monospacedDigit() }
+            }
+            if let percent {
+                ProgressView(value: Double(percent), total: 100)
+            } else {
+                ProgressView()
+            }
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(14)
+        .frame(maxWidth: 520)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
     }
 }

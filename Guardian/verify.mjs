@@ -37,6 +37,9 @@ writeFileSync(join(integration, 'marker.txt'), 'golden\n')
 
 try {
   const guardian = await import(`./guardian.mjs?verify=${Date.now()}`)
+  const boot = { rev: 'test', entries: [{ id: 'entry', url: '/entry.js' }] }
+  assert.deepEqual(guardian.bootManifest(`<head><script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script></head>`), boot)
+  assert.deepEqual(guardian.bootManifest(`<head><script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(boot)}<\\/script></head>`), boot)
   const integrations = guardian.guardianIntegrations()
   assert.equal(integrations.length, 1)
   assert.equal(integrations[0].id, 'test-integration')
