@@ -101,7 +101,7 @@ final class AppStore: NSObject, ObservableObject {
         updateStatusItemBalance()
     }
 
-    // MARK: - macOS 菜单栏余额状态（status item）
+    // MARK: - macOS 菜单栏
 
     private var statusItem: NSStatusItem?
     private var updateMenuItem: NSMenuItem?
@@ -116,28 +116,23 @@ final class AppStore: NSObject, ObservableObject {
         if let button = item.button {
             if let logo = statusBarLogo() {
                 button.image = logo
-                button.imagePosition = .imageLeft
             }
-            button.attributedTitle = balanceAttributedTitle()
-            button.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
+            button.toolTip = "DeepSeek Harness（点开查看状态）"
         }
         let menu = NSMenu()
         let version = NSMenuItem(title: "DeepSeek Harness v\(desktopVersion)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)
         menu.addItem(.separator())
-        let open = NSMenuItem(title: "打开客户端面板", action: #selector(menuShowClientPanel), keyEquivalent: "")
+        let open = NSMenuItem(title: "打开 DeepSeek Harness", action: #selector(menuOpenHarness), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
         let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
         ask.target = self
         menu.addItem(ask)
-        let protection = NSMenuItem(title: "服务保护…", action: #selector(menuShowProtection), keyEquivalent: "")
-        protection.target = self
-        menu.addItem(protection)
-        let refresh = NSMenuItem(title: "刷新余额", action: #selector(menuRefreshBalance), keyEquivalent: "")
-        refresh.target = self
-        menu.addItem(refresh)
+        let status = NSMenuItem(title: "当前状态…", action: #selector(menuShowProtection), keyEquivalent: "")
+        status.target = self
+        menu.addItem(status)
         let check = NSMenuItem(title: "检查更新", action: #selector(menuCheckUpdate), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
@@ -152,15 +147,14 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 刷新菜单栏余额文字与颜色（绿/红按阈值）。
     func updateStatusItemBalance() {
-        guard let button = statusItem?.button else { return }
-        button.attributedTitle = balanceAttributedTitle()
+        // 余额仍可用于低余额通知，但不再占用默认菜单栏信息层。
     }
 
     /// 有新版本时，把「检查更新」菜单项改成提示文案。
     func refreshUpdateMenuItem() {
         guard let item = updateMenuItem else { return }
         if updateInstallAvailable, let v = updateVersion {
-            item.title = updateBusy ? "正在更新引擎…" : "🆕 有新版本 \(v)，点击更新"
+            item.title = updateBusy ? "正在更新…" : "可更新到 \(v)…"
         } else {
             item.title = "检查更新"
         }
@@ -205,9 +199,33 @@ final class AppStore: NSObject, ObservableObject {
             w.makeKeyAndOrderFront(nil)
         }
     }
+    func openHarness() {
+        NSWorkspace.shared.open(URL(string: ServerManager.url)!)
+    }
+
+    /// 供用户交给技术支持的最小诊断摘要。只复制状态和版本，不复制错误正文、密钥、
+    /// 提问内容、会话内容或配置文件。
+    func copyDiagnosticReport() {
+        let response = guardianStatus
+        let running = response?.up == true ? "可以连接" : "暂时无法连接"
+        let operation = response?.operation
+        let lines = [
+            "DeepSeek Harness 桌面端诊断报告（已脱敏）",
+            "生成时间：\(ISO8601DateFormatter().string(from: Date()))",
+            "当前状态：\(running)",
+            "引擎版本：\(response?.engine ?? "未识别")",
+            "最近操作：\(operation?.command ?? "无") · \(operation?.phase ?? "无")",
+            "最近成功检查：\(response?.state?.lastSuccess ?? "无")",
+            "隐私说明：本报告不包含密钥、令牌、提问内容、会话正文、完整配置或原始错误。",
+        ]
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
+        guardianMessage = "脱敏诊断报告已复制，可直接发送给技术支持。"
+    }
     @objc private func menuShowClientPanel() { showClientPanel() }
+    @objc private func menuOpenHarness() { openHarness() }
     @objc private func menuQuickPrompt() { quickPrompt.toggle() }
-    @objc private func menuRefreshBalance() { refreshBalance() }
     @objc private func menuCheckUpdate() {
         if updateInstallAvailable { performEngineUpdate() }
         else { checkUpdate(force: true) }
@@ -302,7 +320,7 @@ final class AppStore: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Guardian 服务保护
+    // MARK: - 当前状态与服务恢复
 
     func startGuardianAutoRefresh() {
         refreshGuardian()
@@ -320,7 +338,7 @@ final class AppStore: NSObject, ObservableObject {
                 (diff, diffError) = GuardianService.diff()
             } else {
                 diff = nil
-                diffError = response == nil ? error : "当前 Guardian 不支持配置差异，请重新安装新版组件。"
+                diffError = response == nil ? error : "当前保护组件未提供额外诊断信息。"
             }
             DispatchQueue.main.async {
                 self.guardianStatus = response
@@ -335,8 +353,8 @@ final class AppStore: NSObject, ObservableObject {
                         protocolVersion: EventBridge.protocolVersion,
                         id: "guardian-mode-\(mode)-\(Int(Date().timeIntervalSince1970))",
                         type: "guardian.recovered",
-                        title: mode == "safe" ? "Guardian 已进入安全模式" : "Guardian 已完成自动恢复",
-                        message: mode == "safe" ? "正式配置未能安全启动，已切换到核心模块。" : "服务已恢复到可用的黄金版本。",
+                        title: mode == "safe" ? "服务已进入受限运行" : "服务已恢复",
+                        message: mode == "safe" ? "完整功能暂时未能启动，目前保留基础可用状态。" : "服务已恢复到可以正常使用的状态。",
                         sessionId: nil, callbackURL: nil, promptURL: nil
                     ))
                 }
@@ -348,7 +366,7 @@ final class AppStore: NSObject, ObservableObject {
     private func runGuardian(_ command: String, success: String, reloadWeb: Bool = false) {
         guardianBusy = true
         guardianError = nil
-        guardianMessage = "正在执行…"
+        guardianMessage = "正在检查并处理。"
         DispatchQueue.global(qos: .userInitiated).async {
             let (response, error) = GuardianService.run(command)
             DispatchQueue.main.async {
@@ -375,15 +393,15 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func runGuardianPreflight() {
-        runGuardian("preflight", success: "完整预检通过；正式服务未受影响。")
+        runGuardian("preflight", success: "完整检查通过；当前服务未受影响。")
     }
 
     func restartWithGuardian() {
-        runGuardian("restart", success: "安全重启完成。", reloadWeb: true)
+        runGuardian("restart", success: "服务已重新连接并确认可用。", reloadWeb: true)
     }
 
     func recoverWithGuardian() {
-        runGuardian("recover", success: "黄金版本已恢复并重新启动。", reloadWeb: true)
+        runGuardian("recover", success: "已恢复到上一次正常状态。", reloadWeb: true)
     }
 
     func enterGuardianSafeMode() {
@@ -429,7 +447,7 @@ final class AppStore: NSObject, ObservableObject {
                 self.updateAvailable = newer && self.settings.dismissedUpdateVersion != latest
                 self.refreshUpdateMenuItem()
                 self.updateMessage = newer
-                    ? "发现新版本：Harness 引擎 \(latest)（当前 \(installed)）\n\n点击“一键更新”后，客户端会先下载并预检新引擎；通过后才切换并安全重启。"
+                    ? "发现可用更新：\(latest)（当前 \(installed)）\n\n更新会依次下载、检查能否正常启动、应用更新，并确认 DeepSeek Harness 可用；若无法完成，会保留当前可用状态。"
                     : "已是最新版本（\(installed)）。"
                 if force { self.showUpdateAlert = true }
             }
@@ -443,7 +461,7 @@ final class AppStore: NSObject, ObservableObject {
         updateBusy = true
         updateProgressPercent = 10
         showUpdateAlert = false
-        updateMessage = "正在下载并预检 Harness 引擎 \(version)…"
+        updateMessage = "第 1 步（共 4 步）：正在下载更新…"
         refreshUpdateMenuItem()
         startEngineProgressPolling()
         DispatchQueue.global(qos: .userInitiated).async {
@@ -455,20 +473,20 @@ final class AppStore: NSObject, ObservableObject {
                 self.engineProgressTimer = nil
                 self.refreshUpdateMenuItem()
                 if let error {
-                    self.updateMessage = "引擎更新失败：\(error)"
+                    self.updateMessage = "更新没有完成，但此前能正常运行的版本仍在使用。\n\n技术原因：\(error)"
                     self.showUpdateAlert = true
                     return
                 }
                 if response?.updated == true, response?.effectiveMode == "production" {
                     self.updateAvailable = false
                     self.updateInstallAvailable = false
-                    self.updateMessage = "Harness 引擎已更新到 \(version)，服务已安全重启。"
+                    self.updateMessage = "更新已完成：DeepSeek Harness 已更新到 \(version)，并已确认可以正常使用。"
                     self.refreshUpdateMenuItem()
                     self.serverStatus = ServerManager.statusText()
                     self.refreshGuardian()
                     self.showUpdateAlert = true
                 } else {
-                    self.updateMessage = response?.displayError ?? "引擎更新未完成，当前服务保持原版本。"
+                    self.updateMessage = "更新没有完成，但此前能正常运行的版本仍在使用。\n\n技术原因：\(response?.displayError ?? "未返回具体原因")"
                     self.showUpdateAlert = true
                 }
             }
@@ -487,7 +505,7 @@ final class AppStore: NSObject, ObservableObject {
                     if let message = progress.message, !message.isEmpty {
                         self.updateProgressPercent = progress.percent
                         let suffix = progress.percent.map { "（\($0)%）" } ?? ""
-                        self.updateMessage = "\(message)\(suffix)"
+                        self.updateMessage = "正在更新：\(message)\(suffix)"
                     }
                 }
             }

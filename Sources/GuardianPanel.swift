@@ -1,20 +1,29 @@
 import SwiftUI
 
-private enum GuardianPanelAction: String, Identifiable {
-    case restart, recover, safeMode
+private enum StatusAction: String, Identifiable {
+    case restart, recover
     var id: String { rawValue }
+
     var title: String {
         switch self {
-        case .restart: return "确认安全重启？"
-        case .recover: return "确认恢复黄金版本？"
-        case .safeMode: return "确认进入安全模式？"
+        case .restart: return "重新启动服务？"
+        case .recover: return "恢复到上一次正常状态？"
         }
     }
+
     var message: String {
         switch self {
-        case .restart: return "Guardian 会先在临时端口完成预检，通过后才停止正式服务。"
-        case .recover: return "将恢复 last-known-good 配置和插件快照，然后重新启动服务。"
-        case .safeMode: return "将停止正式 profile，只加载 DSH 核心 Web 模块。"
+        case .restart:
+            return "服务会短暂重新连接。开始前会检查能否正常启动；如果无法启动，会继续使用此前能正常运行的状态。"
+        case .recover:
+            return "将恢复上一次能正常运行的状态，并重新打开服务。"
+        }
+    }
+
+    var button: String {
+        switch self {
+        case .restart: return "重新启动"
+        case .recover: return "恢复"
         }
     }
 }
@@ -22,181 +31,163 @@ private enum GuardianPanelAction: String, Identifiable {
 struct GuardianPanel: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var pendingAction: GuardianPanelAction?
+    @State private var pendingAction: StatusAction?
+    @State private var showTechnicalDetails = false
 
     private var response: GuardianResponse? { store.guardianStatus }
-    private var mode: String { response?.effectiveMode ?? "unknown" }
-    private var modeLabel: String {
-        switch mode {
-        case "production": return "正式模式"
-        case "recovered": return "已自动恢复"
-        case "safe": return "安全模式"
-        default: return "状态未知"
-        }
+    private var isRunning: Bool { response?.up == true }
+    private var isRecovering: Bool { store.guardianBusy || response?.operation?.phase == "running" }
+
+    private var title: String {
+        if isRecovering { return "正在让服务恢复可用" }
+        if isRunning { return response?.effectiveMode == "recovered" ? "服务已恢复" : "DeepSeek Harness 正常运行" }
+        return "DeepSeek Harness 暂时无法连接"
     }
-    private var modeColor: Color { mode == "safe" ? .orange : (response?.up == true ? .green : .red) }
+
+    private var explanation: String {
+        if isRecovering {
+            if let message = response?.operation?.message, !message.isEmpty { return message }
+            if !store.guardianMessage.isEmpty { return store.guardianMessage }
+            return "正在检查并恢复可用状态。完成后会自动再次确认。"
+        }
+        if isRunning {
+            return response?.effectiveMode == "recovered"
+                ? "已经回到可以正常使用的状态。"
+                : "你可以继续使用。"
+        }
+        return "网页和远程访问可能暂时不可用。你可以先检查并尝试恢复。"
+    }
+
+    private var statusColor: Color {
+        if isRecovering { return .orange }
+        return isRunning ? .green : .red
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("服务保护").font(.title2).fontWeight(.semibold)
-                    Text("Guardian 在 DSH 进程之外执行预检、恢复和安全模式。")
-                        .font(.callout).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: isRecovering ? "arrow.triangle.2.circlepath.circle.fill" : (isRunning ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"))
+                    .font(.system(size: 32))
+                    .foregroundStyle(statusColor)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("当前状态").font(.title2).fontWeight(.semibold)
+                    Text(title).font(.headline)
+                    Text(explanation).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(modeLabel)
-                    .font(.callout).fontWeight(.medium)
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(modeColor.opacity(0.16)).foregroundStyle(modeColor)
-                    .clipShape(Capsule())
             }
 
-            GroupBox {
-                VStack(spacing: 10) {
-                    statusRow("服务", response?.up == true ? "运行中" : "未运行")
-                    statusRow("Guardian", response?.guardianVersion.map { "v\($0) · 协议 \(response?.protocolVersion ?? 0)" } ?? "未安装或不可用")
-                    statusRow("正式进程", response?.pid.map(String.init) ?? response?.state?.pid.map(String.init) ?? "—")
-                    statusRow("客户端模块", response?.live?.modules.map { "\($0) 个" } ?? "—")
-                    statusRow("黄金版本", response?.lastKnownGood == true ? "已建立" : "尚未建立")
-                    statusRow("受保护集成", "\(response?.integrations?.count ?? 0) 个")
-                    statusRow("最近成功", compactDate(response?.state?.lastSuccess))
-                    statusRow("原生事件", store.bridgeStatus)
-                    statusRow("任务进度", store.nativeTaskStatus)
-                }.padding(.vertical, 4)
-            }
-
-            GroupBox("相对黄金版本的配置差异") {
+            if isRecovering {
+                let operation = response?.operation
                 VStack(alignment: .leading, spacing: 7) {
-                    if let diff = store.guardianDiff {
-                        if !diff.available {
-                            Text("尚未建立黄金版本。")
-                        } else if !diff.changed {
-                            Text("当前配置与黄金版本一致。")
-                                .foregroundStyle(.green)
-                        } else {
-                            let summary = diff.summary
-                            Text("新增 \(summary?.added ?? 0) · 修改 \(summary?.modified ?? 0) · 删除 \(summary?.deleted ?? 0) · 无法读取 \(summary?.unreadable ?? 0)")
-                                .font(.callout).fontWeight(.medium)
-                            ForEach(Array(diff.items.prefix(8))) { item in
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(diffStatus(item.status))
-                                        .foregroundStyle(diffColor(item.status))
-                                        .frame(width: 64, alignment: .leading)
-                                    Text("\(item.scope) / \(item.path)")
-                                        .font(.system(.caption, design: .monospaced))
-                                        .textSelection(.enabled)
-                                    Spacer()
-                                }
-                            }
-                            if diff.items.count > 8 {
-                                Text("另有 \(diff.items.count - 8) 项未展开。")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    } else {
-                        Text(store.guardianDiffError ?? "正在读取差异…")
-                            .foregroundStyle(store.guardianDiffError == nil ? Color.secondary : Color.red)
+                    HStack {
+                        Text("正在处理").fontWeight(.medium)
+                        Spacer()
+                        if let percent = operation?.percent { Text("\(percent)%").monospacedDigit() }
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-            }
-
-            GroupBox("原生控制面运行记录") {
-                let metrics = store.nativeMetrics
-                VStack(spacing: 8) {
-                    statusRow("通知提交", "\(metrics.count(.notificationScheduled)) / \(metrics.count(.notificationRequested)) 成功")
-                    statusRow("原生审批", "\(metrics.count(.approvalSucceeded)) 成功 · \(metrics.count(.approvalFailed)) 失败 · \(metrics.count(.approvalDeferredToWeb)) 转网页")
-                    statusRow("快速提问", "\(metrics.count(.quickPromptOpened)) 次打开 · \(metrics.count(.quickPromptSent)) 次发送 · \(metrics.count(.quickPromptFailed)) 次失败")
-                    statusRow("Guardian 恢复", "自动 \(metrics.count(.guardianAutoRecovered)) · 手动 \(metrics.count(.guardianManualRecovered)) · 安全模式 \(metrics.count(.guardianSafeMode))")
-                    statusRow("最近更新", compactDate(metrics.updatedAt))
-                    Text("仅保存在本机，不记录命令、提问内容、配置正文、密钥或会话标识。")
+                    if let percent = operation?.percent {
+                        ProgressView(value: Double(percent), total: 100)
+                    } else {
+                        ProgressView()
+                    }
+                    Text(operation?.message ?? "完成后会自动确认服务是否可用。")
                         .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(.vertical, 4)
-            }
-
-            if let error = store.guardianError ?? response?.state?.lastError, !error.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("最近问题").font(.headline)
-                    Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
+                .padding(14)
+                .background(statusColor.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                HStack(spacing: 10) {
+                    if isRunning {
+                        Button("打开 DeepSeek Harness") { store.openHarness() }
+                            .buttonStyle(.borderedProminent)
+                        Button("重新检查") { store.refreshGuardian() }
+                    } else {
+                        Button("检查并尝试恢复") { pendingAction = .restart }
+                            .buttonStyle(.borderedProminent)
+                        Button("重新检查") { store.refreshGuardian() }
+                    }
+                    Spacer()
                 }
             }
 
-            if !store.guardianMessage.isEmpty {
-                Text(store.guardianMessage)
-                    .font(.callout)
-                    .foregroundStyle(store.guardianError == nil ? Color.secondary : Color.red)
+            if let error = store.guardianError, !error.isEmpty, !isRecovering {
+                Text("系统尚未完成恢复。你可以再次尝试，或在技术详情中查看诊断信息。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
-            if !store.nativeActionMessage.isEmpty {
-                Text(store.nativeActionMessage)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            Divider()
+
+            DisclosureGroup("技术详情", isExpanded: $showTechnicalDetails) {
+                VStack(alignment: .leading, spacing: 9) {
+                    technicalRow("服务状态", isRunning ? "运行中" : "未运行")
+                    technicalRow("保护组件", response?.guardianVersion.map { "v\($0)" } ?? "未启用额外检查")
+                    technicalRow("当前模式", technicalMode)
+                    technicalRow("上次成功", compactDate(response?.state?.lastSuccess))
+                    if let operation = response?.operation {
+                        technicalRow("最近操作", "\(operation.command ?? "—") · \(operation.phase ?? "—")")
+                    }
+                    if let error = store.guardianError ?? response?.state?.lastError, !error.isEmpty {
+                        Text("诊断信息").font(.caption).foregroundStyle(.secondary)
+                        Text(error).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    }
+                    HStack(spacing: 10) {
+                        Button("运行完整检查") { store.runGuardianPreflight() }
+                        if response?.lastKnownGood == true {
+                            Button("恢复到上一次正常状态") { pendingAction = .recover }
+                        }
+                        Button("复制脱敏诊断报告") { store.copyDiagnosticReport() }
+                    }
+                    .disabled(store.guardianBusy)
+                    Text("技术详情用于排障。不会显示你的密钥、提问内容或会话正文。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.top, 8)
             }
 
-            HStack(spacing: 10) {
-                Button("刷新") { store.refreshGuardian() }
-                Button("完整预检") { store.runGuardianPreflight() }
-                    .buttonStyle(.borderedProminent)
-                Button("安全重启") { pendingAction = .restart }
-                Button("恢复黄金版本") { pendingAction = .recover }
-                    .disabled(response?.lastKnownGood != true)
-                Button("安全模式") { pendingAction = .safeMode }
-                    .foregroundStyle(.orange)
+            HStack {
                 Spacer()
-                if store.guardianBusy { ProgressView().controlSize(.small) }
                 Button("关闭") { dismiss() }
             }
-            .disabled(store.guardianBusy)
         }
         .padding(22)
-        .frame(minWidth: 700, minHeight: 680)
+        .frame(minWidth: 560, minHeight: 390)
         .onAppear { store.refreshGuardian() }
         .alert(item: $pendingAction) { action in
             Alert(
                 title: Text(action.title),
                 message: Text(action.message),
-                primaryButton: .destructive(Text("继续")) {
+                primaryButton: .default(Text(action.button)) {
                     switch action {
                     case .restart: store.restartWithGuardian()
                     case .recover: store.recoverWithGuardian()
-                    case .safeMode: store.enterGuardianSafeMode()
                     }
                 },
-                secondaryButton: .cancel()
+                secondaryButton: .cancel(Text("取消"))
             )
         }
     }
 
-    private func statusRow(_ label: String, _ value: String) -> some View {
+    private var technicalMode: String {
+        switch response?.effectiveMode {
+        case "production": return "常规运行"
+        case "recovered": return "已自动恢复"
+        case "safe": return "受限运行"
+        default: return "未确认"
+        }
+    }
+
+    private func technicalRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label).foregroundStyle(.secondary)
             Spacer()
             Text(value).textSelection(.enabled)
-        }.font(.callout)
+        }
+        .font(.callout)
     }
 
     private func compactDate(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "—" }
         return value.replacingOccurrences(of: "T", with: " ").replacingOccurrences(of: "Z", with: "")
-    }
-
-    private func diffStatus(_ status: String) -> String {
-        switch status {
-        case "added": return "新增"
-        case "modified": return "修改"
-        case "deleted": return "删除"
-        default: return "无法读取"
-        }
-    }
-
-    private func diffColor(_ status: String) -> Color {
-        switch status {
-        case "added": return .green
-        case "modified": return .orange
-        default: return .red
-        }
     }
 }

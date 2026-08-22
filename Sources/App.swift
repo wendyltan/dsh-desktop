@@ -26,7 +26,7 @@ struct DeepSeekHarnessApp: App {
                 }
             }
             CommandGroup(replacing: .newItem) {}
-            CommandMenu("服务器") {
+            CommandMenu("DeepSeek Harness") {
                 Button("在浏览器中打开") {
                     NSWorkspace.shared.open(URL(string: ServerManager.url)!)
                 }
@@ -35,11 +35,8 @@ struct DeepSeekHarnessApp: App {
                 Divider()
                 Button("快速提问…") { store.showQuickPrompt() }
                 Divider()
-                Button("服务保护…") { store.showGuardianPanel = true }
+                Button("当前状态…") { store.showGuardianPanel = true }
                 Button("检查更新…") { store.checkUpdate(force: true) }
-                Divider()
-                Button("重启服务") { store.restartServer() }
-                Button("停止服务") { store.stopServer() }
             }
         }
     }
@@ -88,7 +85,7 @@ struct EngineUpdateProgressView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "arrow.down.circle.fill")
-                Text("正在更新 Harness 引擎").fontWeight(.semibold)
+                Text("正在更新 DeepSeek Harness").fontWeight(.semibold)
                 Spacer()
                 if let percent { Text("\(percent)%").monospacedDigit() }
             }
