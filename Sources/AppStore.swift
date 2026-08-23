@@ -124,16 +124,22 @@ final class AppStore: NSObject, ObservableObject {
         version.isEnabled = false
         menu.addItem(version)
         menu.addItem(.separator())
-        let open = NSMenuItem(title: "打开 DeepSeek Harness", action: #selector(menuOpenHarness), keyEquivalent: "")
+        let open = NSMenuItem(title: "打开客户端窗口", action: #selector(menuOpenHarness), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let browser = NSMenuItem(title: "在浏览器中打开网页", action: #selector(menuOpenBrowser), keyEquivalent: "")
+        browser.target = self
+        menu.addItem(browser)
+        let reload = NSMenuItem(title: "重新加载当前页面", action: #selector(menuReloadPage), keyEquivalent: "r")
+        reload.target = self
+        menu.addItem(reload)
         let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
         ask.target = self
         menu.addItem(ask)
         let status = NSMenuItem(title: "当前状态…", action: #selector(menuShowProtection), keyEquivalent: "")
         status.target = self
         menu.addItem(status)
-        let check = NSMenuItem(title: "检查更新", action: #selector(menuCheckUpdate), keyEquivalent: "")
+        let check = NSMenuItem(title: "检查更新…", action: #selector(menuCheckUpdate), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
         updateMenuItem = check
@@ -156,7 +162,7 @@ final class AppStore: NSObject, ObservableObject {
         if updateInstallAvailable, let v = updateVersion {
             item.title = updateBusy ? "正在更新…" : "可更新到 \(v)…"
         } else {
-            item.title = "检查更新"
+            item.title = "检查更新…"
         }
     }
 
@@ -199,9 +205,11 @@ final class AppStore: NSObject, ObservableObject {
             w.makeKeyAndOrderFront(nil)
         }
     }
-    func openHarness() {
+    func openBrowser() {
         NSWorkspace.shared.open(URL(string: ServerManager.url)!)
     }
+
+    func openHarness() { showClientPanel() }
 
     /// 供用户交给技术支持的最小诊断摘要。只复制状态和版本，不复制错误正文、密钥、
     /// 提问内容、会话内容或配置文件。
@@ -225,10 +233,11 @@ final class AppStore: NSObject, ObservableObject {
     }
     @objc private func menuShowClientPanel() { showClientPanel() }
     @objc private func menuOpenHarness() { openHarness() }
+    @objc private func menuOpenBrowser() { openBrowser() }
+    @objc private func menuReloadPage() { reloadWebView() }
     @objc private func menuQuickPrompt() { quickPrompt.toggle() }
     @objc private func menuCheckUpdate() {
-        if updateInstallAvailable { performEngineUpdate() }
-        else { checkUpdate(force: true) }
+        checkUpdate(force: true)
     }
     @objc private func menuQuit() { NSApp.terminate(nil) }
     @objc private func menuShowProtection() {

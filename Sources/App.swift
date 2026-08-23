@@ -26,11 +26,10 @@ struct DeepSeekHarnessApp: App {
                 }
             }
             CommandGroup(replacing: .newItem) {}
-            CommandMenu("DeepSeek Harness") {
-                Button("在浏览器中打开") {
-                    NSWorkspace.shared.open(URL(string: ServerManager.url)!)
-                }
-                Button("刷新页面") { store.reloadWebView() }
+            CommandMenu("客户端") {
+                Button("打开客户端窗口") { store.showClientPanel() }
+                Button("在浏览器中打开网页") { store.openBrowser() }
+                Button("重新加载当前页面") { store.reloadWebView() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
                 Button("快速提问…") { store.showQuickPrompt() }

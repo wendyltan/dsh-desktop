@@ -40,7 +40,7 @@ struct GuardianPanel: View {
 
     private var title: String {
         if isRecovering { return "正在让服务恢复可用" }
-        if isRunning { return response?.effectiveMode == "recovered" ? "服务已恢复" : "DeepSeek Harness 正常运行" }
+        if isRunning { return response?.effectiveMode == "recovered" ? "服务已恢复" : "运行状态正常" }
         return "DeepSeek Harness 暂时无法连接"
     }
 
@@ -99,7 +99,7 @@ struct GuardianPanel: View {
             } else {
                 HStack(spacing: 10) {
                     if isRunning {
-                        Button("打开 DeepSeek Harness") { store.openHarness() }
+                        Button("打开客户端窗口") { store.openHarness() }
                             .buttonStyle(.borderedProminent)
                         Button("重新检查") { store.refreshGuardian() }
                     } else {
