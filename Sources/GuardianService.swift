@@ -105,9 +105,56 @@ struct GuardianDiffResponse: Decodable {
 enum GuardianService {
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
     static let executable = "\(home)/.dsh/guardian/guardian.mjs"
+    /// guardian 落盘的状态/进度文件（与 guardian.mjs 常量对齐，纯只读）。
+    static let stateFile = "\(home)/.dsh/guardian/state.json"
+    static let operationFile = "\(home)/.dsh/guardian/operation.json"
+    static let updateFile = "\(home)/.dsh/guardian/update.json"
+    static let lastKnownGoodPath = "\(home)/.dsh/guardian/last-known-good"
 
     static var isInstalled: Bool {
         FileManager.default.fileExists(atPath: executable)
+    }
+
+    /// 读取 guardian 落盘的 JSON 文件；不存在或解析失败返回 nil。
+    static func readJSON<T: Decodable>(_ path: String, as type: T.Type) -> T? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    /// 轻量状态：只读落盘 JSON + 回环探活，不 spawn node、不做全树 diff。
+    /// engine/guardianVersion/integrations 等完整字段由 deep 刷新补齐。
+    static func lightStatus() -> GuardianResponse {
+        let state = readJSON(stateFile, as: GuardianRuntimeState.self)
+        let operation = readJSON(operationFile, as: GuardianOperationState.self)
+        let update = readJSON(updateFile, as: GuardianUpdateState.self)
+        return GuardianResponse(
+            ok: true,
+            guardianVersion: nil,
+            protocolVersion: nil,
+            capabilities: nil,
+            up: ServerManager.isUp(),
+            url: ServerManager.url,
+            engine: nil,
+            state: state,
+            mode: nil,
+            pid: state?.pid,
+            lastKnownGood: FileManager.default.fileExists(atPath: lastKnownGoodPath),
+            integrations: nil,
+            live: nil,
+            stage: nil,
+            issues: nil,
+            action: nil,
+            reason: nil,
+            error: nil,
+            updated: nil,
+            alreadyCurrent: nil,
+            fromVersion: nil,
+            toVersion: nil,
+            rolledBack: nil,
+            rollbackError: nil,
+            update: update,
+            operation: operation
+        )
     }
 
     static func run(_ command: String) -> (GuardianResponse?, String?) {

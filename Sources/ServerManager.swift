@@ -9,11 +9,23 @@ enum ServerManager {
 
     static var launchScript: String { "\(home)/.dsh/dsh-desktop/launch.sh" }
     static var stopScript: String { "\(home)/.dsh/dsh-desktop/stop.sh" }
-    static var guardianScript: String { "\(home)/.dsh/guardian/guardian.mjs" }
     static var logFile: String { "\(home)/.dsh/logs/dsh-web.log" }
 
+    /// 用 URLSession 探测本机服务是否响应（替代 curl）。
+    /// 与 curl「连上即算 up」一致：任何 HTTP 响应都视为运行中，仅网络错误/超时视为停止。
     static func isUp() -> Bool {
-        zsh("curl -s -o /dev/null --max-time 2 \(shellQuote(url))").ok
+        guard let target = URL(string: url) else { return false }
+        var request = URLRequest(url: target)
+        request.timeoutInterval = 2
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        var up = false
+        let semaphore = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            up = (response as? HTTPURLResponse) != nil
+            semaphore.signal()
+        }.resume()
+        _ = semaphore.wait(timeout: .now() + 2.5)
+        return up
     }
 
     static func statusText() -> String {
@@ -28,12 +40,6 @@ enum ServerManager {
     @discardableResult
     static func stop() -> ShellResult {
         runScriptFile(stopScript)
-    }
-
-    /// 由外部 Guardian 先隔离预检，再安全重启；失败时自动恢复或进入安全模式。
-    @discardableResult
-    static func restart() -> ShellResult {
-        zsh("node \(shellQuote(guardianScript)) restart --json")
     }
 
     /// 最近的服务日志尾部，用于界面展示诊断信息。

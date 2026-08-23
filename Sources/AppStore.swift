@@ -4,7 +4,6 @@ import AppKit
 final class AppStore: NSObject, ObservableObject {
     @Published var serverStatus = "…"
     @Published var reloadToken = 0
-    @Published var showGuardianPanel = false
     @Published var guardianStatus: GuardianResponse?
     @Published var guardianBusy = false
     @Published var guardianMessage = ""
@@ -22,22 +21,22 @@ final class AppStore: NSObject, ObservableObject {
     private let hotKey = GlobalHotKey()
     private let quickPrompt = QuickPromptPanelController()
     private let metrics = NativeMetricsStore()
+    private let guardianPanelController = GuardianPanelController()
     private var nativeSurfaceStarted = false
     private var didNotifyLowBalance = false
     private var lastGuardianMode: String?
+    private var lastEngine: String?
+    private var lastGuardianVersion: String?
+
+    /// 引擎/保护组件版本：优先取最近一次完整 status，否则回退到缓存（deep 刷新时更新）。
+    var resolvedEngine: String? { guardianStatus?.engine ?? lastEngine }
+    var resolvedGuardianVersion: String? { guardianStatus?.guardianVersion ?? lastGuardianVersion }
 
     @Published var balance: BalanceInfo?
     @Published var balanceError: String?
     @Published var balanceLoading = false
     @Published var settings: AppSettings = AppSettings.load()
     private var balanceTimer: Timer?
-
-    /// 余额显示颜色：低于预警阈值红色，否则绿色；无数据时次要色。
-    var balanceColor: Color {
-        guard let first = balance?.balanceInfos.first,
-              let v = Double(first.totalBalance) else { return .secondary }
-        return v < settings.balanceWarningThreshold ? .red : .green
-    }
 
     /// 是否处于低余额预警。
     var balanceLow: Bool {
@@ -48,17 +47,23 @@ final class AppStore: NSObject, ObservableObject {
 
     func reloadWebView() { reloadToken += 1 }
 
-    func refreshServerStatus() { serverStatus = ServerManager.statusText() }
+    /// 异步刷新服务状态文字（isUp 探测在后台线程完成，避免阻塞主线程）。
+    func refreshServerStatus() {
+        DispatchQueue.global(qos: .utility).async {
+            let text = ServerManager.statusText()
+            DispatchQueue.main.async { self.serverStatus = text }
+        }
+    }
 
     /// 应用启动时调用：若服务未运行则拉起，随后刷新页面；已运行则页面已在 WebView 加载完成。
     func ensureServerRunning() {
-        refreshServerStatus()
-        guard !ServerManager.isUp() else { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = ServerManager.start()
+            let wasUp = ServerManager.isUp()
+            if !wasUp { _ = ServerManager.start() }
+            let text = ServerManager.statusText()
             DispatchQueue.main.async {
-                self.serverStatus = ServerManager.statusText()
-                self.reloadWebView()
+                self.serverStatus = text
+                if !wasUp { self.reloadWebView() }
             }
         }
     }
@@ -116,8 +121,10 @@ final class AppStore: NSObject, ObservableObject {
         if let button = item.button {
             if let logo = statusBarLogo() {
                 button.image = logo
+                button.imagePosition = .imageLeft
             }
-            button.toolTip = "DeepSeek Harness（点开查看状态）"
+            button.attributedTitle = balanceAttributedTitle()
+            button.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
         }
         let menu = NSMenu()
         let version = NSMenuItem(title: "DeepSeek Harness v\(desktopVersion)", action: nil, keyEquivalent: "")
@@ -151,11 +158,6 @@ final class AppStore: NSObject, ObservableObject {
         statusItem = item
     }
 
-    /// 刷新菜单栏余额文字与颜色（绿/红按阈值）。
-    func updateStatusItemBalance() {
-        // 余额仍可用于低余额通知，但不再占用默认菜单栏信息层。
-    }
-
     /// 有新版本时，把「检查更新」菜单项改成提示文案。
     func refreshUpdateMenuItem() {
         guard let item = updateMenuItem else { return }
@@ -164,6 +166,12 @@ final class AppStore: NSObject, ObservableObject {
         } else {
             item.title = "检查更新…"
         }
+    }
+
+    /// 刷新菜单栏余额文字与颜色（绿/红按阈值）。
+    func updateStatusItemBalance() {
+        guard let button = statusItem?.button else { return }
+        button.attributedTitle = balanceAttributedTitle()
     }
 
     private func balanceAttributedTitle() -> NSAttributedString {
@@ -221,7 +229,7 @@ final class AppStore: NSObject, ObservableObject {
             "DeepSeek Harness 桌面端诊断报告（已脱敏）",
             "生成时间：\(ISO8601DateFormatter().string(from: Date()))",
             "当前状态：\(running)",
-            "引擎版本：\(response?.engine ?? "未识别")",
+            "引擎版本：\(resolvedEngine ?? "未识别")",
             "最近操作：\(operation?.command ?? "无") · \(operation?.phase ?? "无")",
             "最近成功检查：\(response?.state?.lastSuccess ?? "无")",
             "隐私说明：本报告不包含密钥、令牌、提问内容、会话正文、完整配置或原始错误。",
@@ -231,7 +239,6 @@ final class AppStore: NSObject, ObservableObject {
         pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
         guardianMessage = "脱敏诊断报告已复制，可直接发送给技术支持。"
     }
-    @objc private func menuShowClientPanel() { showClientPanel() }
     @objc private func menuOpenHarness() { openHarness() }
     @objc private func menuOpenBrowser() { openBrowser() }
     @objc private func menuReloadPage() { reloadWebView() }
@@ -241,8 +248,12 @@ final class AppStore: NSObject, ObservableObject {
     }
     @objc private func menuQuit() { NSApp.terminate(nil) }
     @objc private func menuShowProtection() {
-        showGuardianPanel = true
-        showClientPanel()
+        showGuardianPanel()
+    }
+
+    /// 打开「当前状态」独立浮窗（无需先打开客户端主窗口）。
+    func showGuardianPanel() {
+        guardianPanelController.show(store: self)
     }
 
     // MARK: - 原生事件、通知与全局提问
@@ -324,7 +335,7 @@ final class AppStore: NSObject, ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             _ = ServerManager.stop()
             DispatchQueue.main.async {
-                self.serverStatus = ServerManager.statusText()
+                self.refreshServerStatus()
             }
         }
     }
@@ -332,30 +343,40 @@ final class AppStore: NSObject, ObservableObject {
     // MARK: - 当前状态与服务恢复
 
     func startGuardianAutoRefresh() {
-        refreshGuardian()
+        refreshGuardian(deep: true)
         guardianTimer?.invalidate()
         guardianTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            self?.refreshGuardian()
+            self?.refreshGuardian(deep: false)
         }
     }
 
-    func refreshGuardian() {
+    /// 刷新保护组件状态。deep=false 走轻量路径：只读落盘 JSON + 回环探活，
+    /// 不 spawn node、不做全树 diff；deep=true 额外跑完整 status 与 diff（按需）。
+    func refreshGuardian(deep: Bool = false) {
         DispatchQueue.global(qos: .utility).async {
-            let (response, error) = GuardianService.run("status")
-            let (diff, diffError): (GuardianDiffResponse?, String?)
-            if response?.capabilities?.contains("diff") == true {
-                (diff, diffError) = GuardianService.diff()
-            } else {
-                diff = nil
-                diffError = response == nil ? error : "当前保护组件未提供额外诊断信息。"
+            var response = GuardianService.lightStatus()
+            var error: String?
+            var diff: GuardianDiffResponse?
+            var diffError: String?
+            if deep {
+                let (full, fullError) = GuardianService.run("status")
+                if let full { response = full }
+                error = fullError
+                if response.capabilities?.contains("diff") == true {
+                    (diff, diffError) = GuardianService.diff()
+                } else {
+                    diffError = "当前保护组件未提供额外诊断信息。"
+                }
             }
             DispatchQueue.main.async {
                 self.guardianStatus = response
                 self.guardianError = error
                 self.guardianDiff = diff
                 self.guardianDiffError = diffError
-                if let mode = response?.effectiveMode, let previous = self.lastGuardianMode,
-                   mode != previous, mode == "recovered" || mode == "safe" {
+                if let engine = response.engine { self.lastEngine = engine }
+                if let version = response.guardianVersion { self.lastGuardianVersion = version }
+                let mode = response.effectiveMode
+                if let previous = self.lastGuardianMode, mode != previous, mode == "recovered" || mode == "safe" {
                     self.metrics.record(mode == "safe" ? .guardianSafeMode : .guardianAutoRecovered,
                                         outcome: "mode-transition")
                     self.notificationService.publish(DesktopBridgeEvent(
@@ -367,7 +388,7 @@ final class AppStore: NSObject, ObservableObject {
                         sessionId: nil, callbackURL: nil, promptURL: nil
                     ))
                 }
-                self.lastGuardianMode = response?.effectiveMode
+                self.lastGuardianMode = mode
             }
         }
     }
@@ -394,9 +415,9 @@ final class AppStore: NSObject, ObservableObject {
                         sessionId: nil, callbackURL: nil, promptURL: nil
                     ))
                 }
-                self.serverStatus = ServerManager.statusText()
+                self.refreshServerStatus()
                 if reloadWeb { self.reloadWebView() }
-                self.refreshGuardian()
+                self.refreshGuardian(deep: true)
             }
         }
     }
@@ -491,8 +512,8 @@ final class AppStore: NSObject, ObservableObject {
                     self.updateInstallAvailable = false
                     self.updateMessage = "更新已完成：DeepSeek Harness 已更新到 \(version)，并已确认可以正常使用。"
                     self.refreshUpdateMenuItem()
-                    self.serverStatus = ServerManager.statusText()
-                    self.refreshGuardian()
+                    self.refreshServerStatus()
+                    self.refreshGuardian(deep: true)
                     self.showUpdateAlert = true
                 } else {
                     self.updateMessage = "更新没有完成，但此前能正常运行的版本仍在使用。\n\n技术原因：\(response?.displayError ?? "未返回具体原因")"
@@ -507,8 +528,7 @@ final class AppStore: NSObject, ObservableObject {
         engineProgressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, self.updateBusy else { return }
             DispatchQueue.global(qos: .utility).async {
-                let (status, _) = GuardianService.run("status")
-                guard let progress = status?.update else { return }
+                guard let progress = GuardianService.readJSON(GuardianService.updateFile, as: GuardianUpdateState.self) else { return }
                 DispatchQueue.main.async {
                     guard self.updateBusy else { return }
                     if let message = progress.message, !message.isEmpty {

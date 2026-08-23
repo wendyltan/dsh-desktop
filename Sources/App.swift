@@ -34,7 +34,7 @@ struct DeepSeekHarnessApp: App {
                 Divider()
                 Button("快速提问…") { store.showQuickPrompt() }
                 Divider()
-                Button("当前状态…") { store.showGuardianPanel = true }
+                Button("当前状态…") { store.showGuardianPanel() }
                 Button("检查更新…") { store.checkUpdate(force: true) }
             }
         }
@@ -55,9 +55,6 @@ struct ContentView: View {
                     )
                     .padding(.top, 12)
                 }
-            }
-            .sheet(isPresented: $store.showGuardianPanel) {
-                GuardianPanel().environmentObject(store)
             }
             .alert("更新检查", isPresented: $store.showUpdateAlert) {
             if store.updateInstallAvailable {

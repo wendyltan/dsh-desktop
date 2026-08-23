@@ -15,11 +15,13 @@ struct DesktopBridgeEvent: Codable {
 enum EventBridgeError: LocalizedError {
     case unavailable(String)
     case invalidResponse
+    case noSession
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let message): return message
         case .invalidResponse: return "Harness 提问端点返回了无效响应"
+        case .noSession: return "当前没有活动的 Harness 会话，已为你打开客户端。"
         }
     }
 }
@@ -118,10 +120,19 @@ final class EventBridge {
             ])
             URLSession.shared.dataTask(with: request) { _, response, error in
                 let result: Result<Void, Error>
-                if let error { result = .failure(error) }
-                else if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                    result = .success(())
-                } else { result = .failure(EventBridgeError.invalidResponse) }
+                if let error {
+                    result = .failure(error)
+                } else if let http = response as? HTTPURLResponse {
+                    if (200..<300).contains(http.statusCode) {
+                        result = .success(())
+                    } else if http.statusCode == 409 {
+                        result = .failure(EventBridgeError.noSession)
+                    } else {
+                        result = .failure(EventBridgeError.invalidResponse)
+                    }
+                } else {
+                    result = .failure(EventBridgeError.invalidResponse)
+                }
                 DispatchQueue.main.async { completion(result) }
             }.resume()
         }

@@ -78,7 +78,6 @@ struct DSHCtl {
               dshctl status                查看服务状态
               dshctl balance               查看 API 余额/用量
               dshctl update-check          检查 Harness 引擎更新
-              远程访问与可信主机请在 dsh-ops-console 中管理
               dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>
               dshctl native-metrics        查看不含敏感内容的原生控制面统计
               dshctl log                   查看服务日志
