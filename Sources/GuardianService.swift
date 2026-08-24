@@ -39,6 +39,16 @@ struct GuardianOperationState: Decodable {
     let updatedAt: String?
 }
 
+/// 本地时间线里的一条脱敏事件。
+struct GuardianEvent: Decodable, Identifiable {
+    let type: String
+    let at: String
+    let message: String
+    let fromVersion: String?
+    let toVersion: String?
+    var id: String { "\(at)-\(type)-\(message)" }
+}
+
 struct GuardianResponse: Decodable {
     let ok: Bool
     let guardianVersion: String?
@@ -66,6 +76,8 @@ struct GuardianResponse: Decodable {
     let rollbackError: String?
     let update: GuardianUpdateState?
     let operation: GuardianOperationState?
+    let previousVersion: String?
+    let recentEvents: [GuardianEvent]?
 
     var effectiveMode: String { mode ?? state?.mode ?? "unknown" }
     var displayError: String? {
@@ -110,6 +122,8 @@ enum GuardianService {
     static let operationFile = "\(home)/.dsh/guardian/operation.json"
     static let updateFile = "\(home)/.dsh/guardian/update.json"
     static let lastKnownGoodPath = "\(home)/.dsh/guardian/last-known-good"
+    static let engineStateFile = "\(home)/.dsh/guardian/engine.json"
+    static let eventsFile = "\(home)/.dsh/guardian/events.log"
 
     static var isInstalled: Bool {
         FileManager.default.fileExists(atPath: executable)
@@ -119,6 +133,26 @@ enum GuardianService {
     static func readJSON<T: Decodable>(_ path: String, as type: T.Type) -> T? {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
+    }
+
+    /// 读 engine.json 里的 previous.version（可回退的上一版本）。
+    static func readPreviousVersion() -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: engineStateFile)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let previous = json["previous"] as? [String: Any],
+              let version = previous["version"] as? String, !version.isEmpty else { return nil }
+        return version
+    }
+
+    /// 读 events.log（JSONL），取最近 N 条事件。
+    static func readRecentEvents(limit: Int = 20) -> [GuardianEvent] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: eventsFile)),
+              let text = String(data: data, encoding: .utf8) else { return [] }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).suffix(limit)
+        return lines.compactMap { line in
+            guard let d = line.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(GuardianEvent.self, from: d)
+        }
     }
 
     /// 轻量状态：只读落盘 JSON + 回环探活，不 spawn node、不做全树 diff。
@@ -153,12 +187,19 @@ enum GuardianService {
             rolledBack: nil,
             rollbackError: nil,
             update: update,
-            operation: operation
+            operation: operation,
+            previousVersion: readPreviousVersion(),
+            recentEvents: readRecentEvents()
         )
     }
 
     static func run(_ command: String) -> (GuardianResponse?, String?) {
         run(command, args: [])
+    }
+
+    /// 手动回退到上一个引擎版本。
+    static func rollback() -> (GuardianResponse?, String?) {
+        run("rollback")
     }
 
     static func run(_ command: String, args: [String]) -> (GuardianResponse?, String?) {

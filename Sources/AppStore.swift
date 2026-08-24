@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Network
 
 final class AppStore: NSObject, ObservableObject {
     @Published var serverStatus = "…"
@@ -18,15 +19,19 @@ final class AppStore: NSObject, ObservableObject {
     @Published var nativeMetrics = NativeMetricsSnapshot.empty()
     private var eventBridge: EventBridge?
     private let notificationService = NotificationService()
-    private let hotKey = GlobalHotKey()
+    private let hotKeyManager = GlobalHotKeyManager()
     private let quickPrompt = QuickPromptPanelController()
     private let metrics = NativeMetricsStore()
     private let guardianPanelController = GuardianPanelController()
+    private let settingsWindowController = SettingsWindowController()
     private var nativeSurfaceStarted = false
     private var didNotifyLowBalance = false
     private var lastGuardianMode: String?
     private var lastEngine: String?
     private var lastGuardianVersion: String?
+    private let pathMonitor = NWPathMonitor()
+    private var resilienceMonitorStarted = false
+    private var lastNetworkChange = Date.distantPast
 
     /// 引擎/保护组件版本：优先取最近一次完整 status，否则回退到缓存（deep 刷新时更新）。
     var resolvedEngine: String? { guardianStatus?.engine ?? lastEngine }
@@ -36,6 +41,7 @@ final class AppStore: NSObject, ObservableObject {
     @Published var balanceError: String?
     @Published var balanceLoading = false
     @Published var settings: AppSettings = AppSettings.load()
+    @Published var quickPromptModels: [BridgeModel] = []
     private var balanceTimer: Timer?
 
     /// 是否处于低余额预警。
@@ -151,6 +157,10 @@ final class AppStore: NSObject, ObservableObject {
         menu.addItem(check)
         updateMenuItem = check
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(menuSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 DeepSeek Harness", action: #selector(menuQuit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -250,10 +260,108 @@ final class AppStore: NSObject, ObservableObject {
     @objc private func menuShowProtection() {
         showGuardianPanel()
     }
+    @objc private func menuSettings() { openSettings() }
 
     /// 打开「当前状态」独立浮窗（无需先打开客户端主窗口）。
     func showGuardianPanel() {
         guardianPanelController.show(store: self)
+    }
+
+    // MARK: - 全局快捷键与设置
+
+    /// 按当前设置注册全局快捷键。
+    func registerHotKeys() {
+        hotKeyManager.unregisterAll()
+        if let error = hotKeyManager.register(settings.quickPromptShortcut, action: { [weak self] in
+            self?.quickPrompt.toggle()
+        }) {
+            nativeActionMessage = "快速提问快捷键：\(error)"
+        }
+        if let error = hotKeyManager.register(settings.guardianShortcut, action: { [weak self] in
+            self?.showGuardianPanel()
+        }) {
+            nativeActionMessage = "当前状态快捷键：\(error)"
+        }
+    }
+
+    func updateQuickPromptShortcut(_ shortcut: Shortcut) {
+        settings.quickPromptShortcut = shortcut
+        settings.save()
+        quickPrompt.shortcutHint = shortcut.displayString
+        registerHotKeys()
+    }
+
+    func updateGuardianShortcut(_ shortcut: Shortcut) {
+        settings.guardianShortcut = shortcut
+        settings.save()
+        registerHotKeys()
+    }
+
+    /// 从 Harness 侧读取可选模型目录（用于新会话默认模型）。
+    func refreshQuickPromptModels() {
+        guard let bridge = eventBridge else { return }
+        bridge.fetchModels { [weak self] result in
+            if case .success(let models) = result {
+                self?.quickPromptModels = models
+            }
+        }
+    }
+
+    func updateQuickPromptMode(_ mode: String) {
+        settings.quickPromptMode = mode
+        settings.save()
+        refreshQuickPromptHint()
+    }
+
+    func updateQuickPromptModel(provider: String?, model: String?) {
+        settings.quickPromptProvider = provider
+        settings.quickPromptModel = model
+        settings.save()
+        refreshQuickPromptHint()
+    }
+
+    private func refreshQuickPromptHint() {
+        if settings.quickPromptMode == "existing" {
+            quickPrompt.modeHint = "已有会话"
+        } else if let model = settings.quickPromptModel, !model.isEmpty {
+            quickPrompt.modeHint = "新会话 · \(model)"
+        } else {
+            quickPrompt.modeHint = "新会话"
+        }
+    }
+
+    /// 打开设置窗口。
+    func openSettings() {
+        settingsWindowController.show(store: self)
+    }
+
+    // MARK: - 网络 / 睡眠自适应自愈（静默，无 UI）
+
+    /// 网络恢复或系统唤醒后快速重新校验并轻量拉起服务，比 60s watchdog 更快。
+    func startResilienceMonitor() {
+        guard !resilienceMonitorStarted else { return }
+        resilienceMonitorStarted = true
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            DispatchQueue.main.async { self?.networkBecameSatisfied() }
+        }
+        pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
+
+        NotificationCenter.default.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.networkBecameSatisfied() }
+    }
+
+    private func networkBecameSatisfied() {
+        let now = Date()
+        guard now.timeIntervalSince(lastNetworkChange) >= 2 else { return }
+        lastNetworkChange = now
+        refreshGuardian(deep: false)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self, !ServerManager.isUp() else { return }
+            DispatchQueue.main.async { self.ensureServerRunning() }
+        }
     }
 
     // MARK: - 原生事件、通知与全局提问
@@ -262,6 +370,7 @@ final class AppStore: NSObject, ObservableObject {
         guard !nativeSurfaceStarted else { return }
         nativeSurfaceStarted = true
 
+        startResilienceMonitor()
         nativeMetrics = metrics.snapshot
         metrics.onChange = { [weak self] snapshot in self?.nativeMetrics = snapshot }
 
@@ -273,16 +382,20 @@ final class AppStore: NSObject, ObservableObject {
         quickPrompt.onOpenClient = { [weak self] in self?.showClientPanel() }
         quickPrompt.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         quickPrompt.onSend = { [weak self] prompt, completion in
-            guard let bridge = self?.eventBridge else {
+            guard let self, let bridge = self.eventBridge else {
                 completion(.failure(EventBridgeError.unavailable("事件桥不可用，草稿已保留。")))
                 return
             }
-            bridge.sendPrompt(prompt, completion: completion)
+            bridge.sendPrompt(prompt,
+                              mode: self.settings.quickPromptMode,
+                              provider: self.settings.quickPromptProvider,
+                              model: self.settings.quickPromptModel,
+                              completion: completion)
         }
 
-        if let error = hotKey.registerOptionSpace(action: { [weak self] in self?.quickPrompt.toggle() }) {
-            nativeActionMessage = error
-        }
+        registerHotKeys()
+        quickPrompt.shortcutHint = settings.quickPromptShortcut.displayString
+        refreshQuickPromptHint()
 
         do {
             let bridge = try EventBridge()
@@ -298,10 +411,15 @@ final class AppStore: NSObject, ObservableObject {
                 case "task.failed": self.nativeTaskStatus = "最近任务执行失败"
                 default: break
                 }
+                if event.type == "bridge.connected" { self.refreshQuickPromptModels() }
                 if event.type.hasPrefix("guardian.") { self.refreshGuardian() }
             }, approvalAllowed: { [weak self] in
                 self?.notificationService.canDeliverApproval() == true
-            }, onState: { [weak self] state in self?.bridgeStatus = state })
+            }, onState: { [weak self] state in
+                guard let self else { return }
+                self.bridgeStatus = state
+                self.quickPrompt.connected = state.hasPrefix("事件桥已连接")
+            })
         } catch {
             bridgeStatus = "事件桥启动失败：\(error.localizedDescription)"
         }
@@ -436,6 +554,25 @@ final class AppStore: NSObject, ObservableObject {
 
     func enterGuardianSafeMode() {
         runGuardian("safe-mode", success: "已进入安全模式。", reloadWeb: true)
+    }
+
+    /// 手动回退到上一个引擎版本（若存在），并安全重启确认。
+    func rollbackToPreviousVersion() {
+        guardianBusy = true
+        guardianError = nil
+        guardianMessage = "正在回到之前的版本…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (response, error) = GuardianService.rollback()
+            DispatchQueue.main.async {
+                self.guardianBusy = false
+                self.guardianStatus = response ?? self.guardianStatus
+                self.guardianError = error
+                self.guardianMessage = error == nil ? "已回到之前的版本。" : "回退失败"
+                self.refreshServerStatus()
+                self.reloadWebView()
+                self.refreshGuardian(deep: true)
+            }
+        }
     }
 
     // MARK: - 自动更新检查

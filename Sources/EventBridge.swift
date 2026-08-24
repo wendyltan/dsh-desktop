@@ -12,6 +12,19 @@ struct DesktopBridgeEvent: Codable {
     let promptURL: String?
 }
 
+/// 引擎模型目录里的一项（供快速提问选择新会话模型）。
+struct BridgeModel: Decodable, Identifiable {
+    let provider: String
+    let model: String
+    let name: String
+    var id: String { "\(provider):\(model)" }
+}
+
+private struct ModelsResponse: Decodable {
+    let ok: Bool
+    let models: [BridgeModel]
+}
+
 enum EventBridgeError: LocalizedError {
     case unavailable(String)
     case invalidResponse
@@ -101,7 +114,8 @@ final class EventBridge {
         listener = nil
     }
 
-    func sendPrompt(_ prompt: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    func sendPrompt(_ prompt: String, mode: String, provider: String?, model: String?,
+                    completion: @escaping (Result<Void, Error>) -> Void) {
         queue.async { [weak self] in
             guard let endpoint = self?.promptEndpoint else {
                 DispatchQueue.main.async {
@@ -109,15 +123,19 @@ final class EventBridge {
                 }
                 return
             }
+            var body: [String: Any] = [
+                "protocolVersion": Self.protocolVersion,
+                "prompt": prompt,
+                "mode": mode,
+            ]
+            if let provider, !provider.isEmpty { body["provider"] = provider }
+            if let model, !model.isEmpty { body["model"] = model }
             var request = URLRequest(url: endpoint)
             request.httpMethod = "POST"
             request.timeoutInterval = 20
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("Bearer \(self?.token ?? "")", forHTTPHeaderField: "Authorization")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: [
-                "protocolVersion": Self.protocolVersion,
-                "prompt": prompt,
-            ])
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             URLSession.shared.dataTask(with: request) { _, response, error in
                 let result: Result<Void, Error>
                 if let error {
@@ -130,6 +148,34 @@ final class EventBridge {
                     } else {
                         result = .failure(EventBridgeError.invalidResponse)
                     }
+                } else {
+                    result = .failure(EventBridgeError.invalidResponse)
+                }
+                DispatchQueue.main.async { completion(result) }
+            }.resume()
+        }
+    }
+
+    /// 从 Harness 侧读取可选模型目录（用于新会话默认模型选择）。
+    func fetchModels(completion: @escaping (Result<[BridgeModel], Error>) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let base = self.promptEndpoint?.deletingLastPathComponent() else {
+                DispatchQueue.main.async {
+                    completion(.failure(EventBridgeError.unavailable("Harness 尚未连接，无法读取模型列表。")))
+                }
+                return
+            }
+            var request = URLRequest(url: base.appendingPathComponent("models"))
+            request.timeoutInterval = 10
+            request.setValue("Bearer \(self.token)", forHTTPHeaderField: "Authorization")
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let result: Result<[BridgeModel], Error>
+                if let error {
+                    result = .failure(error)
+                } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    result = .failure(EventBridgeError.invalidResponse)
+                } else if let data, let decoded = try? JSONDecoder().decode(ModelsResponse.self, from: data), decoded.ok {
+                    result = .success(decoded.models)
                 } else {
                     result = .failure(EventBridgeError.invalidResponse)
                 }

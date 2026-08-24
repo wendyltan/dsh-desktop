@@ -27,6 +27,7 @@ const PID_FILE = join(LOG_DIR, 'dsh-web.pid')
 const GUARDIAN_LOG = join(LOG_DIR, 'dsh-guardian.log')
 const UPDATE_STATE_FILE = join(ROOT, 'update.json')
 const OPERATION_STATE_FILE = join(ROOT, 'operation.json')
+const EVENTS_FILE = join(ROOT, 'events.log')
 const HOST = process.env.DSH_WEB_HOST ?? '127.0.0.1'
 const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 const BASE = `http://${HOST}:${PORT}`
@@ -34,7 +35,7 @@ const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
 const GUARDIAN_VERSION = '0.3.0'
 const PROTOCOL_VERSION = 2
-const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'update', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations', 'diff']
+const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'update', 'rollback', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations', 'diff']
 const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
 const ENGINE_STATE_FILE = join(ROOT, 'engine.json')
 const ENGINE_ROOT = join(ROOT, 'engines')
@@ -84,6 +85,35 @@ function updateState(patch) { writeJsonAtomic(STATE_FILE, { ...state(), ...patch
 function updateProgress(patch) {
   if (patch === null) { rmSync(UPDATE_STATE_FILE, { force: true }); return }
   writeJsonAtomic(UPDATE_STATE_FILE, { ...(readJson(UPDATE_STATE_FILE, {}) ?? {}), ...patch, updatedAt: now() })
+}
+
+/** 追加一条脱敏事件到本地时间线：只存类型 + 时间 + 一句话 + 版本号。 */
+function appendEvent(type, message, { fromVersion, toVersion } = {}) {
+  const event = { type, at: now(), message }
+  if (fromVersion) event.fromVersion = fromVersion
+  if (toVersion) event.toVersion = toVersion
+  try { writeFileSync(EVENTS_FILE, JSON.stringify(event) + '\n', { flag: 'a' }) } catch {}
+}
+
+/** 读取最近 N 条事件（按文件顺序，最新在末尾）。 */
+function recentEvents(limit = 20) {
+  try {
+    const lines = readFileSync(EVENTS_FILE, 'utf8').split('\n').filter((line) => line.trim() !== '')
+    return lines.slice(-limit)
+      .map((line) => { try { return JSON.parse(line) } catch { return null } })
+      .filter(Boolean)
+  } catch { return [] }
+}
+
+/** 可从 engine.json 回退的上一个版本；无则返回 null。 */
+function previousEngine() {
+  const selected = readJson(ENGINE_STATE_FILE)
+  const previous = selected?.previous
+  if (!previous || typeof previous.version !== 'string' || previous.version === '') return null
+  return {
+    fromVersion: typeof selected.version === 'string' ? selected.version : null,
+    toVersion: previous.version,
+  }
 }
 function profileBundles(profile = PROFILE) {
   return readJson(join(profile, 'package.json'), {})?.dsh?.profile?.bundles ?? []
@@ -243,6 +273,7 @@ async function updateEngine(version) {
     rmSync(installed.target, { recursive: true, force: true })
     const error = `引擎 ${version} 未通过隔离预检：${reason}`
     updateProgress({ phase: 'rolled-back', percent: 0, version, message: `预检未通过，已保留当前引擎：${reason}` })
+    appendEvent('rolled-back', `更新到 ${version} 未通过检查，已保持当前版本。`, { fromVersion: current, toVersion: version })
     return { ok: false, updated: false, stage: checked.stage, issues: checked.issues, error, rolledBack: true }
   }
 
@@ -257,6 +288,7 @@ async function updateEngine(version) {
   const live = detectEngineVersion()
   if (restarted.ok && restarted.mode === 'production' && live === version) {
     updateProgress({ phase: 'completed', percent: 100, version, message: `引擎已更新到 ${version}` })
+    appendEvent('updated', `引擎更新到 ${version}。`, { fromVersion: current, toVersion: version })
     return { ...restarted, updated: true, fromVersion: current, toVersion: version }
   }
 
@@ -270,11 +302,23 @@ async function updateEngine(version) {
     ? '新引擎启动未通过，已恢复旧引擎'
     : `新引擎启动未通过，旧引擎恢复失败：${rollbackError ?? '服务未能启动'}`
   updateProgress({ phase: 'rolled-back', percent: 0, version, message: rollbackMessage })
+  appendEvent('rolled-back', `更新到 ${version} 未通过启动，已回到 ${current}。`, { fromVersion: current, toVersion: version })
   return {
     ok: false, updated: false, rolledBack: rollback?.ok === true,
     fromVersion: current, toVersion: version, restart: restarted, rollback, rollbackError,
     error: rollbackMessage,
   }
+}
+
+/** 手动回退到 engine.json 记录的上一个引擎版本，并安全启动。 */
+async function rollbackEngine() {
+  const prev = previousEngine()
+  if (!prev) return { ok: false, error: '没有可回退的版本' }
+  const selected = readJson(ENGINE_STATE_FILE)
+  writeJsonAtomic(ENGINE_STATE_FILE, selected.previous)
+  appendEvent('rolled-back', `已回到之前的版本 ${prev.toVersion}。`, { fromVersion: prev.fromVersion, toVersion: prev.toVersion })
+  const result = await startProduction()
+  return { ...result, rolledBack: result.ok === true, fromVersion: prev.fromVersion, toVersion: prev.toVersion }
 }
 
 /** 从实际启动的 dsh 二进制向上定位 @deepseek-ai/dsh/package.json，读取引擎版本。
@@ -459,7 +503,7 @@ async function preflight({ smoke = true } = {}) {
   const errOffset = existsSync(smokeErr) ? statSync(smokeErr).size : 0
   const out = openSync(smokeOut, 'a')
   const err = openSync(smokeErr, 'a')
-  const child = spawn(process.execPath, [dshEntry(), '--profile', 'web', '--host', '127.0.0.1', '--port', String(port)], {
+  const child = spawn(process.execPath, [dshEntry(), '--profile', 'web', '--no-open', '--host', '127.0.0.1', '--port', String(port)], {
     env: { ...process.env, DSH_HOME: scratch }, stdio: ['ignore', out, err],
   })
   closeSync(out)
@@ -675,7 +719,7 @@ async function stopRunning() {
 
 function spawnProfile(profileName) {
   const out = openSync(LOG_FILE, 'a')
-  const child = spawn(process.execPath, [dshEntry(), '--profile', profileName, '--host', HOST, '--port', String(PORT)], {
+  const child = spawn(process.execPath, [dshEntry(), '--profile', profileName, '--no-open', '--host', HOST, '--port', String(PORT)], {
     detached: true, env: process.env, stdio: ['ignore', out, out],
   })
   closeSync(out)
@@ -712,6 +756,7 @@ async function startSafe(reason) {
   const pid = spawnProfile('safe')
   const result = await waitHealthy('safe')
   updateState({ mode: 'safe', pid, failures: [], lastSuccess: now(), lastError: reason })
+  appendEvent('safe', '服务进入受限运行（安全模式），保持基础可用。')
   log(`safe mode started: ${reason}`)
   return { ok: true, mode: 'safe', pid, reason, ...result }
 }
@@ -748,6 +793,7 @@ async function startProduction({ alreadyChecked = false } = {}) {
         try {
           const result = await waitHealthy('web')
           updateState({ mode: 'recovered', pid: retryPid, failures: [], lastSuccess: now(), lastError: null })
+          appendEvent('recovered', '服务已自动恢复。')
           return { ok: true, mode: 'recovered', pid: retryPid, ...result }
         } catch {}
       }
@@ -791,6 +837,8 @@ async function status() {
     engine: detectEngineVersion(), pid, integrations: guardianIntegrations(), live,
     update: readJson(UPDATE_STATE_FILE),
     operation: readJson(OPERATION_STATE_FILE),
+    previousVersion: previousEngine()?.toVersion ?? null,
+    recentEvents: recentEvents(),
   }
 }
 
@@ -837,6 +885,12 @@ async function main() {
       rmSync(MAINTENANCE_FILE, { force: true })
       return output(await updateEngine(version))
     }
+    if (command === 'rollback') {
+      writeFileSync(ENABLED_FILE, now() + '\n')
+      rmSync(MAINTENANCE_FILE, { force: true })
+      beginOperation('rollback', '准备回到之前的版本…')
+      return output(finishOperation(await rollbackEngine(), '已回到之前的版本并确认可用。'))
+    }
     if (command === 'recover') {
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
@@ -869,4 +923,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
 }
 
-export { bootManifest, configDiff, copyProfileFiles, ensureSafeProfile, guardianIntegrations, restoreLkg, snapshot, validateProfileFiles }
+export { appendEvent, bootManifest, configDiff, copyProfileFiles, ensureSafeProfile, guardianIntegrations, previousEngine, recentEvents, restoreLkg, snapshot, validateProfileFiles }

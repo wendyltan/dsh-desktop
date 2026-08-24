@@ -19,6 +19,7 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/BalanceService.swift \
   Sources/AppSettings.swift \
   Sources/UpdateChecker.swift Sources/GuardianService.swift Sources/GuardianPanel.swift \
+  Sources/SettingsView.swift \
   Sources/EventBridge.swift Sources/NotificationService.swift Sources/GlobalHotKey.swift \
   Sources/QuickPromptPanel.swift Sources/NativeMetrics.swift \
   -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit \

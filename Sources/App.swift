@@ -36,8 +36,12 @@ struct DeepSeekHarnessApp: App {
                 Divider()
                 Button("当前状态…") { store.showGuardianPanel() }
                 Button("检查更新…") { store.checkUpdate(force: true) }
+                Divider()
+                Button("设置…") { store.openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
             }
         }
+
     }
 }
 

@@ -5,6 +5,9 @@ final class QuickPromptModel: ObservableObject {
     @Published var text = ""
     @Published var status = "⌘↩ 发送 · Esc 关闭"
     @Published var sending = false
+    @Published var connected = false
+    @Published var shortcutHint = ""
+    @Published var modeHint = ""
 }
 
 struct QuickPromptView: View {
@@ -16,19 +19,49 @@ struct QuickPromptView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            HStack(spacing: 8) {
                 Text("快速提问").font(.headline)
+                Circle()
+                    .fill(model.connected ? Color.green : Color.secondary.opacity(0.35))
+                    .frame(width: 8, height: 8)
+                if !model.modeHint.isEmpty {
+                    Text(model.modeHint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
                 Spacer()
-                Text("⌥Space").font(.caption).foregroundStyle(.secondary)
+                if !model.shortcutHint.isEmpty {
+                    Text(model.shortcutHint).font(.caption).foregroundStyle(.secondary)
+                }
             }
-            TextEditor(text: $model.text)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.75))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .frame(height: 92)
-                .focused($focused)
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $model.text)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.75))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .focused($focused)
+                if model.text.isEmpty {
+                    Text("向 DeepSeek Harness 提问…")
+                        .font(.body)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 16)
+                        .padding(.leading, 13)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(height: 92)
+
+            if !model.connected {
+                Text("等待 Harness 连接…（连接后可发送）")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             HStack {
                 Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
@@ -41,7 +74,7 @@ struct QuickPromptView: View {
             }
         }
         .padding(16)
-        .frame(width: 520, height: 180)
+        .frame(width: 560, height: 200)
         .onAppear { focused = true }
         .onExitCommand(perform: close)
     }
@@ -53,6 +86,21 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     var onSend: ((String, @escaping (Result<Void, Error>) -> Void) -> Void)?
     var onOpenClient: (() -> Void)?
     var onMetric: ((NativeMetric, String?) -> Void)?
+
+    var connected: Bool {
+        get { model.connected }
+        set { model.connected = newValue }
+    }
+
+    var shortcutHint: String {
+        get { model.shortcutHint }
+        set { model.shortcutHint = newValue }
+    }
+
+    var modeHint: String {
+        get { model.modeHint }
+        set { model.modeHint = newValue }
+    }
 
     func toggle() {
         if panel?.isVisible == true { close(); return }
@@ -71,7 +119,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     func close() { panel?.orderOut(nil) }
 
     private func makePanel() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 180),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 200),
                             styleMask: [.titled, .closable, .fullSizeContentView],
                             backing: .buffered, defer: false)
         panel.title = "DeepSeek Harness · 快速提问"

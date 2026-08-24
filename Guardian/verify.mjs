@@ -67,7 +67,21 @@ try {
   writeFileSync(join(profile, 'cordis.patch.yml'), 'not: [valid\n')
   guardian.ensureSafeProfile()
   assert.equal(readFileSync(join(root, 'profiles', 'safe', 'cordis.patch.yml'), 'utf8'), '[]\n')
-  console.log('Guardian verification passed: generic integration, metadata-only diff, LKG mirror restore, safe patch isolation')
+
+  // rollback / events（纯数据路径，不启动真实服务）
+  writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({
+    active: '/fake/dsh', version: '1.2.0',
+    previous: { active: '/fake/dsh-old', version: '1.1.0' },
+  }))
+  assert.deepEqual(guardian.previousEngine(), { fromVersion: '1.2.0', toVersion: '1.1.0' })
+  assert.equal(guardian.previousEngine()?.toVersion, '1.1.0')
+  guardian.appendEvent('updated', 'engine updated', { fromVersion: '1.1.0', toVersion: '1.2.0' })
+  const events = guardian.recentEvents()
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'updated')
+  assert.equal(events[0].toVersion, '1.2.0')
+
+  console.log('Guardian verification passed: generic integration, metadata-only diff, LKG mirror restore, safe patch isolation, rollback/events')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

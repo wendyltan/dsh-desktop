@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const name = 'dsh-desktop-bridge'
-export const inject = ['webServer', 'agents']
+export const inject = ['webServer', 'agents', 'llm']
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const TOKEN_FILE = join(DSH_HOME, 'desktop-bridge', 'token')
@@ -110,6 +110,17 @@ export function apply(ctx) {
       sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, desktopReachable: existsSync(TOKEN_FILE) })
     })
 
+    route('/dsh-desktop-bridge/models', async (request, response) => {
+      if (request.method !== 'GET') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
+      if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
+      const models = []
+      for (const provider of ctx.llm.listProviders()) {
+        const list = await ctx.llm.listModels(provider.id)
+        for (const model of list) models.push({ provider: provider.id, model: model.id, name: model.name || model.id })
+      }
+      sendJson(response, 200, { ok: true, models })
+    })
+
     route('/dsh-desktop-bridge/prompt', async (request, response) => {
       if (request.method !== 'POST') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
       if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
@@ -118,10 +129,27 @@ export function apply(ctx) {
       if (body?.protocolVersion !== PROTOCOL_VERSION || prompt.length === 0 || prompt.length > 32_000) {
         return sendJson(response, 400, { ok: false, error: 'invalid prompt' })
       }
-      const agent = latestAgent !== null ? agents.get(latestAgent) : undefined
-      if (agent === undefined) return sendJson(response, 409, { ok: false, error: 'no active Harness session' })
-      agent.followup(userMessage(prompt))
-      sendJson(response, 202, { ok: true, sessionId: String(agent.id) })
+      const currentAgent = latestAgent !== null ? agents.get(latestAgent) : undefined
+
+      // 新会话：独立创建一个 agent（默认继承当前会话的工作目录）。
+      // 仅显式 new 才新开；旧客户端不传 mode，保持「已有会话」原行为。
+      if (body?.mode === 'new') {
+        const provider = typeof body?.provider === 'string' && body.provider ? body.provider : undefined
+        const model = typeof body?.model === 'string' && body.model ? body.model : undefined
+        const cwd = currentAgent?.session?.header?.cwd ?? currentAgent?.session?.cwd
+        const handle = await ctx.agents.create({
+          sessionId: randomUUID(),
+          agentOptions: provider && model ? { provider, model } : undefined,
+          meta: cwd ? { cwd } : undefined,
+        })
+        handle.agent.followup(userMessage(prompt))
+        return sendJson(response, 202, { ok: true, sessionId: String(handle.agent.id), mode: 'new' })
+      }
+
+      // 已有会话：延续当前活动会话。
+      if (currentAgent === undefined) return sendJson(response, 409, { ok: false, error: 'no active Harness session' })
+      currentAgent.followup(userMessage(prompt))
+      sendJson(response, 202, { ok: true, sessionId: String(currentAgent.id), mode: 'existing' })
     })
 
     route('/dsh-desktop-bridge/approval', async (request, response) => {
