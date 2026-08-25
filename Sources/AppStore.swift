@@ -42,6 +42,7 @@ final class AppStore: NSObject, ObservableObject {
     @Published var balanceLoading = false
     @Published var settings: AppSettings = AppSettings.load()
     @Published var quickPromptModels: [BridgeModel] = []
+    @Published var quickPromptSummary: String = ""
     private var balanceTimer: Timer?
 
     /// 是否处于低余额预警。
@@ -273,7 +274,13 @@ final class AppStore: NSObject, ObservableObject {
     func registerHotKeys() {
         hotKeyManager.unregisterAll()
         if let error = hotKeyManager.register(settings.quickPromptShortcut, action: { [weak self] in
-            self?.quickPrompt.toggle()
+            guard let self else { return }
+            if self.settings.quickPromptMode == "existing" {
+                self.refreshQuickPromptSummary()
+            } else {
+                self.quickPrompt.summary = ""
+            }
+            self.quickPrompt.toggle()
         }) {
             nativeActionMessage = "快速提问快捷键：\(error)"
         }
@@ -318,6 +325,23 @@ final class AppStore: NSObject, ObservableObject {
         settings.quickPromptModel = model
         settings.save()
         refreshQuickPromptHint()
+    }
+
+    func updateQuickPromptEffort(_ effort: String?) {
+        settings.quickPromptEffort = effort
+        settings.save()
+    }
+
+    /// 读取最近一次会话结果摘要（已有会话模式下展示）。
+    func refreshQuickPromptSummary() {
+        guard let bridge = eventBridge else { return }
+        bridge.fetchSummary { [weak self] result in
+            guard let self else { return }
+            let text: String
+            if case .success(let value) = result { text = value } else { text = "" }
+            self.quickPromptSummary = text
+            self.quickPrompt.summary = text
+        }
     }
 
     private func refreshQuickPromptHint() {
@@ -390,6 +414,7 @@ final class AppStore: NSObject, ObservableObject {
                               mode: self.settings.quickPromptMode,
                               provider: self.settings.quickPromptProvider,
                               model: self.settings.quickPromptModel,
+                              effort: self.settings.quickPromptEffort,
                               completion: completion)
         }
 
@@ -425,7 +450,14 @@ final class AppStore: NSObject, ObservableObject {
         }
     }
 
-    func showQuickPrompt() { quickPrompt.show() }
+    func showQuickPrompt() {
+        if settings.quickPromptMode == "existing" {
+            refreshQuickPromptSummary()
+        } else {
+            quickPrompt.summary = ""
+        }
+        quickPrompt.show()
+    }
 
     private func maybeNotifyLowBalance() {
         if balanceLow, !didNotifyLowBalance {

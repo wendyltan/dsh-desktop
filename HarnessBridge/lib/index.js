@@ -13,6 +13,7 @@ const HOST = process.env.DSH_WEB_HOST ?? '127.0.0.1'
 const PORT = process.env.DSH_WEB_PORT ?? '3080'
 const CALLBACK = `http://127.0.0.1:${PORT}/dsh-desktop-bridge/approval`
 const PROTOCOL_VERSION = 1
+const EFFORTS = new Set(['off', 'low', 'high', 'max'])
 
 function readToken() {
   try { return readFileSync(TOKEN_FILE, 'utf8').trim() } catch { return '' }
@@ -70,6 +71,23 @@ function userMessage(text) {
   })
 }
 
+/** 取最后一条 assistant 消息的文本末尾 lineCount 行（用于「已有会话」摘要）。 */
+function lastAssistantText(events, lineCount = 20) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type !== 'assistant/message') continue
+    const message = event.data?.message
+    if (!message || !Array.isArray(message.content)) continue
+    const text = message.content
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('\n')
+    if (!text.trim()) continue
+    return text.split('\n').slice(-lineCount).join('\n')
+  }
+  return ''
+}
+
 function approvalId(req) {
   const decided = new Set()
   for (let index = req.agent.session.events.length - 1; index >= 0; index -= 1) {
@@ -121,6 +139,14 @@ export function apply(ctx) {
       sendJson(response, 200, { ok: true, models })
     })
 
+    route('/dsh-desktop-bridge/summary', async (request, response) => {
+      if (request.method !== 'GET') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
+      if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
+      const agent = latestAgent !== null ? agents.get(latestAgent) : undefined
+      if (agent === undefined) return sendJson(response, 409, { ok: false, error: 'no active Harness session' })
+      sendJson(response, 200, { ok: true, text: lastAssistantText(agent.session?.events ?? [], 20) })
+    })
+
     route('/dsh-desktop-bridge/prompt', async (request, response) => {
       if (request.method !== 'POST') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
       if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
@@ -134,13 +160,23 @@ export function apply(ctx) {
       // 新会话：独立创建一个 agent（默认继承当前会话的工作目录）。
       // 仅显式 new 才新开；旧客户端不传 mode，保持「已有会话」原行为。
       if (body?.mode === 'new') {
-        const provider = typeof body?.provider === 'string' && body.provider ? body.provider : undefined
-        const model = typeof body?.model === 'string' && body.model ? body.model : undefined
         const cwd = currentAgent?.session?.header?.cwd ?? currentAgent?.session?.cwd
+        const fallback = (() => { try { return ctx.agentDefaultModel?.currentSelection?.() ?? null } catch { return null } })()
+        const provider = typeof body?.provider === 'string' && body.provider ? body.provider : (fallback?.provider ?? undefined)
+        const model = typeof body?.model === 'string' && body.model ? body.model : (fallback?.model ?? undefined)
+        const effort = typeof body?.effort === 'string' && EFFORTS.has(body.effort) ? body.effort : undefined
+        const hasModel = Boolean(provider && model)
         const handle = await ctx.agents.create({
           sessionId: randomUUID(),
-          agentOptions: provider && model ? { provider, model } : undefined,
+          agentOptions: hasModel ? { provider, model } : undefined,
           meta: cwd ? { cwd } : undefined,
+          // 力度通过 agent 作用域的 agent/request 瀑布覆盖（profile 插件不能 import 引擎核心包）。
+          setup: effort ? (agentCtx) => {
+            agentCtx.on('agent/request', async (_payload, next) => {
+              const config = await next()
+              return { ...config, reasoningEffort: effort }
+            })
+          } : undefined,
         })
         handle.agent.followup(userMessage(prompt))
         return sendJson(response, 202, { ok: true, sessionId: String(handle.agent.id), mode: 'new' })

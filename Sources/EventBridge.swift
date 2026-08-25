@@ -25,6 +25,11 @@ private struct ModelsResponse: Decodable {
     let models: [BridgeModel]
 }
 
+private struct SummaryResponse: Decodable {
+    let ok: Bool
+    let text: String
+}
+
 enum EventBridgeError: LocalizedError {
     case unavailable(String)
     case invalidResponse
@@ -114,7 +119,7 @@ final class EventBridge {
         listener = nil
     }
 
-    func sendPrompt(_ prompt: String, mode: String, provider: String?, model: String?,
+    func sendPrompt(_ prompt: String, mode: String, provider: String?, model: String?, effort: String?,
                     completion: @escaping (Result<Void, Error>) -> Void) {
         queue.async { [weak self] in
             guard let endpoint = self?.promptEndpoint else {
@@ -130,6 +135,7 @@ final class EventBridge {
             ]
             if let provider, !provider.isEmpty { body["provider"] = provider }
             if let model, !model.isEmpty { body["model"] = model }
+            if let effort, !effort.isEmpty { body["effort"] = effort }
             var request = URLRequest(url: endpoint)
             request.httpMethod = "POST"
             request.timeoutInterval = 20
@@ -176,6 +182,39 @@ final class EventBridge {
                     result = .failure(EventBridgeError.invalidResponse)
                 } else if let data, let decoded = try? JSONDecoder().decode(ModelsResponse.self, from: data), decoded.ok {
                     result = .success(decoded.models)
+                } else {
+                    result = .failure(EventBridgeError.invalidResponse)
+                }
+                DispatchQueue.main.async { completion(result) }
+            }.resume()
+        }
+    }
+
+    /// 读取最近一次会话的摘要（最后 N 行结果）。
+    func fetchSummary(completion: @escaping (Result<String, Error>) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let base = self.promptEndpoint?.deletingLastPathComponent() else {
+                DispatchQueue.main.async {
+                    completion(.failure(EventBridgeError.unavailable("Harness 尚未连接，无法读取上次结果。")))
+                }
+                return
+            }
+            var request = URLRequest(url: base.appendingPathComponent("summary"))
+            request.timeoutInterval = 10
+            request.setValue("Bearer \(self.token)", forHTTPHeaderField: "Authorization")
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let result: Result<String, Error>
+                if let error {
+                    result = .failure(error)
+                } else if let http = response as? HTTPURLResponse {
+                    if (200..<300).contains(http.statusCode), let data,
+                       let decoded = try? JSONDecoder().decode(SummaryResponse.self, from: data), decoded.ok {
+                        result = .success(decoded.text)
+                    } else if http.statusCode == 409 {
+                        result = .failure(EventBridgeError.noSession)
+                    } else {
+                        result = .failure(EventBridgeError.invalidResponse)
+                    }
                 } else {
                     result = .failure(EventBridgeError.invalidResponse)
                 }

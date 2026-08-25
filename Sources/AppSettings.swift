@@ -9,13 +9,14 @@ struct AppSettings: Codable {
     var quickPromptMode: String = "new"       // 快速提问模式：new（新会话）/ existing（已有会话）
     var quickPromptProvider: String? = nil    // 新会话默认 provider
     var quickPromptModel: String? = nil       // 新会话默认 model
+    var quickPromptEffort: String? = nil      // 新会话默认力度：off/low/high/max（nil = 跟随引擎）
     var lastUpdateCheck: Date? = nil          // 上次检查更新的时间
     var dismissedUpdateVersion: String? = nil // 用户选择「以后再说」的引擎版本
 
     enum CodingKeys: String, CodingKey {
         case balanceRefreshSeconds, balanceWarningThreshold,
              quickPromptShortcut, guardianShortcut,
-             quickPromptMode, quickPromptProvider, quickPromptModel,
+             quickPromptMode, quickPromptProvider, quickPromptModel, quickPromptEffort,
              lastUpdateCheck, dismissedUpdateVersion
     }
 
@@ -31,6 +32,7 @@ struct AppSettings: Codable {
         quickPromptMode = try c.decodeIfPresent(String.self, forKey: .quickPromptMode) ?? "new"
         quickPromptProvider = try c.decodeIfPresent(String.self, forKey: .quickPromptProvider)
         quickPromptModel = try c.decodeIfPresent(String.self, forKey: .quickPromptModel)
+        quickPromptEffort = try c.decodeIfPresent(String.self, forKey: .quickPromptEffort)
         lastUpdateCheck = try c.decodeIfPresent(Date.self, forKey: .lastUpdateCheck)
         dismissedUpdateVersion = try c.decodeIfPresent(String.self, forKey: .dismissedUpdateVersion)
     }

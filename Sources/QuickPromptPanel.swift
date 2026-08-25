@@ -8,6 +8,7 @@ final class QuickPromptModel: ObservableObject {
     @Published var connected = false
     @Published var shortcutHint = ""
     @Published var modeHint = ""
+    @Published var summary = ""
 }
 
 struct QuickPromptView: View {
@@ -35,6 +36,21 @@ struct QuickPromptView: View {
                 Spacer()
                 if !model.shortcutHint.isEmpty {
                     Text(model.shortcutHint).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if !model.summary.isEmpty {
+                DisclosureGroup {
+                    ScrollView {
+                        Text(model.summary)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 110)
+                } label: {
+                    Label("上次结果", systemImage: "clock.arrow.circlepath")
+                        .font(.caption)
                 }
             }
 
@@ -74,7 +90,7 @@ struct QuickPromptView: View {
             }
         }
         .padding(16)
-        .frame(width: 560, height: 200)
+        .frame(width: 560, height: 260)
         .onAppear { focused = true }
         .onExitCommand(perform: close)
     }
@@ -102,6 +118,11 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         set { model.modeHint = newValue }
     }
 
+    var summary: String {
+        get { model.summary }
+        set { model.summary = newValue }
+    }
+
     func toggle() {
         if panel?.isVisible == true { close(); return }
         show()
@@ -119,7 +140,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     func close() { panel?.orderOut(nil) }
 
     private func makePanel() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 200),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 260),
                             styleMask: [.titled, .closable, .fullSizeContentView],
                             backing: .buffered, defer: false)
         panel.title = "DeepSeek Harness · 快速提问"

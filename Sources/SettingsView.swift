@@ -64,6 +64,7 @@ struct SettingsView: View {
     @State private var threshold = 20.0
     @State private var promptMode = "new"
     @State private var promptModelId = ""
+    @State private var promptEffort = ""
 
     var body: some View {
         Form {
@@ -94,6 +95,16 @@ struct SettingsView: View {
                         Text(model.name).tag(model.id)
                     }
                 }
+                Picker("新会话力度", selection: Binding(
+                    get: { promptEffort },
+                    set: { promptEffort = $0; store.updateQuickPromptEffort($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("跟随引擎（默认 high）").tag("")
+                    Text("off（不思考）").tag("off")
+                    Text("low").tag("low")
+                    Text("high").tag("high")
+                    Text("max").tag("max")
+                }
                 HStack {
                     Text("模型列表随连接自动刷新。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -121,13 +132,14 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 470)
+        .frame(width: 460, height: 500)
         .onAppear {
             intervalMinutes = max(1, store.settings.balanceRefreshSeconds / 60)
             threshold = store.settings.balanceWarningThreshold
             promptMode = store.settings.quickPromptMode
             promptModelId = [store.settings.quickPromptProvider, store.settings.quickPromptModel]
                 .compactMap { $0 }.joined(separator: ":")
+            promptEffort = store.settings.quickPromptEffort ?? ""
         }
     }
 
@@ -152,7 +164,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show(store: AppStore) {
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 470),
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
                 styleMask: [.titled, .closable],
                 backing: .buffered, defer: false
             )
