@@ -44,9 +44,32 @@ struct GuardianEvent: Decodable, Identifiable {
     let type: String
     let at: String
     let message: String
+    let scope: String?
     let fromVersion: String?
     let toVersion: String?
     var id: String { "\(at)-\(type)-\(message)" }
+}
+
+struct GuardianEngineVersion: Decodable, Identifiable {
+    let active: String
+    let version: String
+    let installedAt: String?
+    let validatedAt: String?
+    let retainedAt: String?
+    let installed: Bool
+    let managed: Bool
+    var id: String { version }
+}
+
+struct GuardianRecoverySnapshot: Decodable, Identifiable {
+    let id: String
+    let createdAt: String?
+    let engineVersion: String?
+    let profile: String
+    let integrations: [String]
+    let changed: Bool
+    let diffTotal: Int
+    let diffSummary: GuardianDiffSummary?
 }
 
 struct GuardianResponse: Decodable {
@@ -77,6 +100,8 @@ struct GuardianResponse: Decodable {
     let update: GuardianUpdateState?
     let operation: GuardianOperationState?
     let previousVersion: String?
+    let engineHistory: [GuardianEngineVersion]?
+    let recoverySnapshots: [GuardianRecoverySnapshot]?
     let recentEvents: [GuardianEvent]?
 
     var effectiveMode: String { mode ?? state?.mode ?? "unknown" }
@@ -189,6 +214,8 @@ enum GuardianService {
             update: update,
             operation: operation,
             previousVersion: readPreviousVersion(),
+            engineHistory: nil,
+            recoverySnapshots: nil,
             recentEvents: readRecentEvents()
         )
     }
@@ -197,9 +224,16 @@ enum GuardianService {
         run(command, args: [])
     }
 
-    /// 手动回退到上一个引擎版本。
-    static func rollback() -> (GuardianResponse?, String?) {
-        run("rollback")
+    static func switchEngine(version: String) -> (GuardianResponse?, String?) {
+        run("switch-engine", args: ["--version", version])
+    }
+
+    static func forgetEngine(version: String) -> (GuardianResponse?, String?) {
+        run("forget-engine-version", args: ["--version", version])
+    }
+
+    static func recover(snapshot: String) -> (GuardianResponse?, String?) {
+        run("recover", args: ["--snapshot", snapshot])
     }
 
     static func run(_ command: String, args: [String]) -> (GuardianResponse?, String?) {

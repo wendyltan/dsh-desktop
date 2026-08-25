@@ -63,25 +63,50 @@ try {
   assert.equal(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8'), '[]\n')
   assert.equal(readFileSync(join(integration, 'marker.txt'), 'utf8'), 'golden\n')
   assert.equal(guardian.configDiff().changed, false)
+  writeFileSync(join(integration, 'marker.txt'), 'newer\n')
+  guardian.snapshot()
+  const snapshots = guardian.recoverySnapshots()
+  assert.equal(snapshots.length, 2)
+  assert.equal(snapshots[0].id, 'current')
+  assert.equal(snapshots[1].id, 'previous')
+  guardian.restoreLkg(join(root, 'guardian', 'last-known-good.previous'))
+  assert.equal(readFileSync(join(integration, 'marker.txt'), 'utf8'), 'golden\n')
 
   writeFileSync(join(profile, 'cordis.patch.yml'), 'not: [valid\n')
   guardian.ensureSafeProfile()
   assert.equal(readFileSync(join(root, 'profiles', 'safe', 'cordis.patch.yml'), 'utf8'), '[]\n')
 
   // rollback / events（纯数据路径，不启动真实服务）
+  const currentEngine = join(root, 'guardian', 'engines', '1.2.0', 'dsh')
+  const previousEngine = join(root, 'guardian', 'engines', '1.1.0', 'dsh')
+  mkdirSync(dirname(currentEngine), { recursive: true })
+  mkdirSync(dirname(previousEngine), { recursive: true })
+  writeFileSync(currentEngine, '')
+  writeFileSync(previousEngine, '')
   writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({
-    active: '/fake/dsh', version: '1.2.0',
-    previous: { active: '/fake/dsh-old', version: '1.1.0' },
+    active: currentEngine, version: '1.2.0',
+    history: [{ active: previousEngine, version: '1.1.0', retainedAt: new Date().toISOString() }],
   }))
   assert.deepEqual(guardian.previousEngine(), { fromVersion: '1.2.0', toVersion: '1.1.0' })
   assert.equal(guardian.previousEngine()?.toVersion, '1.1.0')
-  guardian.appendEvent('updated', 'engine updated', { fromVersion: '1.1.0', toVersion: '1.2.0' })
+  assert.equal(guardian.engineHistory()[0].installed, true)
+  const retention = guardian.pruneEngineEntries([
+    { active: currentEngine, version: '1.2.0' },
+    { active: previousEngine, version: '1.1.0' },
+    { active: previousEngine, version: '1.0.0' },
+  ])
+  assert.equal(retention.retained.length, 2)
+  assert.equal(retention.dropped[0].version, '1.0.0')
+  guardian.appendEvent('updated', 'engine updated', { fromVersion: '1.1.0', toVersion: '1.2.0', scope: 'engine' })
   const events = guardian.recentEvents()
   assert.equal(events.length, 1)
   assert.equal(events[0].type, 'updated')
   assert.equal(events[0].toVersion, '1.2.0')
+  assert.equal(events[0].scope, 'engine')
+  assert.equal(guardian.forgetEngineVersion('1.1.0').removed, true)
+  assert.equal(guardian.engineHistory().length, 0)
 
-  console.log('Guardian verification passed: generic integration, metadata-only diff, LKG mirror restore, safe patch isolation, rollback/events')
+  console.log('Guardian verification passed: integration, dual recovery snapshots, metadata-only diff, engine history retention, rollback/events')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

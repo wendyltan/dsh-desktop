@@ -6,6 +6,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 mkdir -p bin/bin-cache
 
+echo "== 桌面端 / 保护组件版本一致性 =="
+DESKTOP_VERSION="$(plutil -extract CFBundleShortVersionString raw Info.plist)"
+GUARDIAN_VERSION="$(sed -nE "s/^const GUARDIAN_VERSION = '([^']+)'/\\1/p" Guardian/guardian.mjs)"
+if [ -z "$GUARDIAN_VERSION" ] || [ "$DESKTOP_VERSION" != "$GUARDIAN_VERSION" ]; then
+  echo "版本不一致：desktop=$DESKTOP_VERSION guardian=$GUARDIAN_VERSION" >&2
+  exit 1
+fi
+echo "PASS  desktop=$DESKTOP_VERSION guardian=$GUARDIAN_VERSION"
+
 echo "== UpdateChecker / shellQuote 单测 =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/UpdateChecker.swift Sources/GuardianService.swift \

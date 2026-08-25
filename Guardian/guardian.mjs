@@ -33,12 +33,13 @@ const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 const BASE = `http://${HOST}:${PORT}`
 const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
-const GUARDIAN_VERSION = '0.3.0'
-const PROTOCOL_VERSION = 2
-const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'update', 'rollback', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'integrations', 'diff']
+const GUARDIAN_VERSION = '0.4.0'
+const PROTOCOL_VERSION = 3
+const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'update', 'rollback', 'engine-history', 'switch-engine', 'forget-engine-version', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'recovery-snapshots', 'integrations', 'diff']
 const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
 const ENGINE_STATE_FILE = join(ROOT, 'engine.json')
 const ENGINE_ROOT = join(ROOT, 'engines')
+const MAX_RETAINED_ENGINES = 2
 
 mkdirSync(ROOT, { recursive: true })
 mkdirSync(LOG_DIR, { recursive: true })
@@ -88,8 +89,8 @@ function updateProgress(patch) {
 }
 
 /** 追加一条脱敏事件到本地时间线：只存类型 + 时间 + 一句话 + 版本号。 */
-function appendEvent(type, message, { fromVersion, toVersion } = {}) {
-  const event = { type, at: now(), message }
+function appendEvent(type, message, { fromVersion, toVersion, scope = 'service' } = {}) {
+  const event = { type, at: now(), message, scope }
   if (fromVersion) event.fromVersion = fromVersion
   if (toVersion) event.toVersion = toVersion
   try { writeFileSync(EVENTS_FILE, JSON.stringify(event) + '\n', { flag: 'a' }) } catch {}
@@ -105,15 +106,59 @@ function recentEvents(limit = 20) {
   } catch { return [] }
 }
 
-/** 可从 engine.json 回退的上一个版本；无则返回 null。 */
-function previousEngine() {
-  const selected = readJson(ENGINE_STATE_FILE)
-  const previous = selected?.previous
-  if (!previous || typeof previous.version !== 'string' || previous.version === '') return null
+function normalizeEngineEntry(entry) {
+  if (!entry || !validEngineVersion(entry.version) || typeof entry.active !== 'string' || entry.active === '') return null
   return {
-    fromVersion: typeof selected.version === 'string' ? selected.version : null,
-    toVersion: previous.version,
+    active: entry.active,
+    version: entry.version,
+    installedAt: entry.installedAt ?? null,
+    validatedAt: entry.validatedAt ?? null,
+    retainedAt: entry.retainedAt ?? null,
   }
+}
+
+function retainedEngines(selected = readJson(ENGINE_STATE_FILE, {})) {
+  const result = []
+  const candidates = Array.isArray(selected?.history) ? selected.history : []
+  let legacy = selected?.previous
+  while (legacy && result.length < 10) {
+    candidates.push(legacy)
+    legacy = legacy.previous
+  }
+  for (const candidate of candidates) {
+    const normalized = normalizeEngineEntry(candidate)
+    if (!normalized || result.some((item) => item.version === normalized.version)) continue
+    result.push(normalized)
+  }
+  return result
+}
+
+function activeEngineSelection(selected = readJson(ENGINE_STATE_FILE, {})) {
+  const normalized = normalizeEngineEntry(selected)
+  if (normalized && existsSync(normalized.active)) return normalized
+  try {
+    const active = resolveDshBin()
+    const version = detectEngineVersion()
+    if (active && validEngineVersion(version)) return { active, version, installedAt: null, validatedAt: null, retainedAt: null }
+  } catch {}
+  return normalized
+}
+
+function engineHistory() {
+  const selected = readJson(ENGINE_STATE_FILE, {})
+  return retainedEngines(selected).map((item) => ({
+    ...item,
+    installed: existsSync(item.active),
+    managed: resolve(item.active).startsWith(`${resolve(ENGINE_ROOT)}/`),
+  }))
+}
+
+/** 可回退的首个旧引擎版本；无则返回 null。 */
+function previousEngine() {
+  const current = activeEngineSelection()
+  const previous = engineHistory().find((item) => item.installed)
+  if (!previous) return null
+  return { fromVersion: current?.version ?? null, toVersion: previous.version }
 }
 function profileBundles(profile = PROFILE) {
   return readJson(join(profile, 'package.json'), {})?.dsh?.profile?.bundles ?? []
@@ -199,6 +244,58 @@ function validEngineVersion(value) {
   return typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)
 }
 
+function managedEngineDirectory(active) {
+  if (typeof active !== 'string') return null
+  const absolute = resolve(active)
+  const root = `${resolve(ENGINE_ROOT)}/`
+  if (!absolute.startsWith(root)) return null
+  const relative = absolute.slice(root.length)
+  const directory = relative.split('/')[0]
+  if (!directory || directory === '.' || directory === '..') return null
+  return join(ENGINE_ROOT, directory)
+}
+
+function uniqueEngineEntries(entries, excludingVersion = null) {
+  const result = []
+  for (const candidate of entries) {
+    const entry = normalizeEngineEntry(candidate)
+    if (!entry || entry.version === excludingVersion || result.some((item) => item.version === entry.version)) continue
+    result.push(entry)
+  }
+  return result
+}
+
+function pruneEngineEntries(entries, keep = MAX_RETAINED_ENGINES) {
+  const retained = entries.slice(0, keep)
+  const dropped = entries.slice(keep)
+  return { retained, dropped }
+}
+
+function removeManagedEngine(entry) {
+  const directory = managedEngineDirectory(entry?.active)
+  if (directory) rmSync(directory, { recursive: true, force: true })
+}
+
+function writeEngineSelection(active, history = []) {
+  const current = normalizeEngineEntry(active)
+  if (!current) throw new Error('invalid active engine selection')
+  writeJsonAtomic(ENGINE_STATE_FILE, { ...current, history })
+}
+
+function forgetEngineVersion(version) {
+  if (!validEngineVersion(version)) return { ok: false, error: 'invalid engine version' }
+  const selected = readJson(ENGINE_STATE_FILE, {})
+  const current = activeEngineSelection(selected)
+  if (current?.version === version) return { ok: false, error: '不能删除当前正在使用的引擎版本' }
+  const history = retainedEngines(selected)
+  const removed = history.filter((item) => item.version === version)
+  if (removed.length === 0) return { ok: true, removed: false, version }
+  writeEngineSelection(current, history.filter((item) => item.version !== version))
+  for (const item of removed) removeManagedEngine(item)
+  appendEvent('engine-forgotten', `已不再保留引擎 ${version}。`, { toVersion: version, scope: 'engine' })
+  return { ok: true, removed: true, version }
+}
+
 function installEngine(version) {
   if (!validEngineVersion(version)) throw new Error(`invalid engine version: ${version}`)
   mkdirSync(ENGINE_ROOT, { recursive: true })
@@ -252,14 +349,23 @@ async function updateEngine(version) {
   const current = detectEngineVersion()
   if (current === version) return { ok: true, updated: false, alreadyCurrent: true, version }
   updateProgress({ phase: 'preparing', percent: 0, version, fromVersion: current, message: `准备更新引擎 ${version}` })
-  const previous = readJson(ENGINE_STATE_FILE)
+  const originalState = readJson(ENGINE_STATE_FILE)
+  const currentSelection = activeEngineSelection(originalState ?? {})
+  const priorHistory = retainedEngines(originalState ?? {})
   updateProgress({ phase: 'downloading', percent: 10, version, message: '正在下载引擎及其依赖（预计需要几分钟）' })
   let installed
   try { installed = await installEngine(version) } catch (error) {
     updateProgress({ phase: 'failed', percent: 0, version, message: error.message })
     throw error
   }
-  writeJsonAtomic(ENGINE_STATE_FILE, { active: installed.bin, version, previous })
+  const installedAt = now()
+  const next = { active: installed.bin, version, installedAt, validatedAt: null, retainedAt: installedAt }
+  const historyCandidates = uniqueEngineEntries([
+    currentSelection ? { ...currentSelection, retainedAt: now() } : null,
+    ...priorHistory,
+  ], version)
+  const planned = pruneEngineEntries(historyCandidates)
+  writeEngineSelection(next, planned.retained)
 
   updateProgress({ phase: 'preflight', percent: 65, version, message: '下载完成，正在执行隔离预检' })
   const checked = await preflight()
@@ -268,12 +374,12 @@ async function updateEngine(version) {
       .map((item) => String(item).replace(/\s+/g, ' ').trim().slice(0, 360))
       .filter(Boolean)
       .join('; ')
-    if (previous) writeJsonAtomic(ENGINE_STATE_FILE, previous)
+    if (originalState) writeJsonAtomic(ENGINE_STATE_FILE, originalState)
     else rmSync(ENGINE_STATE_FILE, { force: true })
     rmSync(installed.target, { recursive: true, force: true })
     const error = `引擎 ${version} 未通过隔离预检：${reason}`
     updateProgress({ phase: 'rolled-back', percent: 0, version, message: `预检未通过，已保留当前引擎：${reason}` })
-    appendEvent('rolled-back', `更新到 ${version} 未通过检查，已保持当前版本。`, { fromVersion: current, toVersion: version })
+    appendEvent('rolled-back', `更新到 ${version} 未通过检查，已保持当前版本。`, { fromVersion: current, toVersion: version, scope: 'engine' })
     return { ok: false, updated: false, stage: checked.stage, issues: checked.issues, error, rolledBack: true }
   }
 
@@ -287,12 +393,15 @@ async function updateEngine(version) {
   }
   const live = detectEngineVersion()
   if (restarted.ok && restarted.mode === 'production' && live === version) {
+    const selected = readJson(ENGINE_STATE_FILE, {})
+    writeEngineSelection({ ...selected, validatedAt: now() }, retainedEngines(selected))
+    for (const item of planned.dropped) removeManagedEngine(item)
     updateProgress({ phase: 'completed', percent: 100, version, message: `引擎已更新到 ${version}` })
-    appendEvent('updated', `引擎更新到 ${version}。`, { fromVersion: current, toVersion: version })
-    return { ...restarted, updated: true, fromVersion: current, toVersion: version }
+    appendEvent('updated', `Harness 引擎已从 ${current ?? '未知版本'} 更新到 ${version}。`, { fromVersion: current, toVersion: version, scope: 'engine' })
+    return { ...restarted, updated: true, fromVersion: current, toVersion: version, retainedVersions: planned.retained.map((item) => item.version) }
   }
 
-  if (previous) writeJsonAtomic(ENGINE_STATE_FILE, previous)
+  if (originalState) writeJsonAtomic(ENGINE_STATE_FILE, originalState)
   else rmSync(ENGINE_STATE_FILE, { force: true })
   rmSync(installed.target, { recursive: true, force: true })
   let rollback = null
@@ -302,7 +411,7 @@ async function updateEngine(version) {
     ? '新引擎启动未通过，已恢复旧引擎'
     : `新引擎启动未通过，旧引擎恢复失败：${rollbackError ?? '服务未能启动'}`
   updateProgress({ phase: 'rolled-back', percent: 0, version, message: rollbackMessage })
-  appendEvent('rolled-back', `更新到 ${version} 未通过启动，已回到 ${current}。`, { fromVersion: current, toVersion: version })
+  appendEvent('rolled-back', `更新到 ${version} 未通过启动，已回到 ${current}。`, { fromVersion: current, toVersion: version, scope: 'engine' })
   return {
     ok: false, updated: false, rolledBack: rollback?.ok === true,
     fromVersion: current, toVersion: version, restart: restarted, rollback, rollbackError,
@@ -310,15 +419,53 @@ async function updateEngine(version) {
   }
 }
 
-/** 手动回退到 engine.json 记录的上一个引擎版本，并安全启动。 */
-async function rollbackEngine() {
-  const prev = previousEngine()
-  if (!prev) return { ok: false, error: '没有可回退的版本' }
-  const selected = readJson(ENGINE_STATE_FILE)
-  writeJsonAtomic(ENGINE_STATE_FILE, selected.previous)
-  appendEvent('rolled-back', `已回到之前的版本 ${prev.toVersion}。`, { fromVersion: prev.fromVersion, toVersion: prev.toVersion })
-  const result = await startProduction()
-  return { ...result, rolledBack: result.ok === true, fromVersion: prev.fromVersion, toVersion: prev.toVersion }
+async function switchEngineVersion(version) {
+  if (!validEngineVersion(version)) return { ok: false, error: '请选择有效的引擎版本' }
+  const originalState = readJson(ENGINE_STATE_FILE, {})
+  const current = activeEngineSelection(originalState)
+  if (!current) return { ok: false, error: '无法识别当前引擎' }
+  if (current.version === version) return { ok: true, alreadyCurrent: true, version }
+  const history = retainedEngines(originalState)
+  const target = history.find((item) => item.version === version && existsSync(item.active))
+  if (!target) return { ok: false, error: `引擎 ${version} 未保留在本机，无法离线切换` }
+
+  const candidates = uniqueEngineEntries([
+    { ...current, retainedAt: now() },
+    ...history.filter((item) => item.version !== version),
+  ], version)
+  const planned = pruneEngineEntries(candidates)
+  writeEngineSelection({ ...target, validatedAt: target.validatedAt ?? now() }, planned.retained)
+  operationProgress(25, `正在验证 Harness 引擎 ${version}…`)
+  const checked = await preflight()
+  if (!checked.ok) {
+    writeJsonAtomic(ENGINE_STATE_FILE, originalState)
+    return { ok: false, stage: checked.stage, issues: checked.issues, error: `引擎 ${version} 未通过隔离预检，已保持当前版本 ${current.version}` }
+  }
+  snapshot()
+  operationProgress(70, `验证通过，正在切换到 Harness 引擎 ${version}…`)
+  const started = await startProduction({ alreadyChecked: true })
+  if (started.ok && detectEngineVersion() === version) {
+    const selected = readJson(ENGINE_STATE_FILE, {})
+    writeEngineSelection({ ...selected, validatedAt: now() }, retainedEngines(selected))
+    for (const item of planned.dropped) removeManagedEngine(item)
+    appendEvent('engine-switched', `Harness 引擎已从 ${current.version} 切换到 ${version}。`, { fromVersion: current.version, toVersion: version, scope: 'engine' })
+    return { ...started, switched: true, fromVersion: current.version, toVersion: version }
+  }
+
+  writeJsonAtomic(ENGINE_STATE_FILE, originalState)
+  const restored = await startProduction()
+  return {
+    ok: false, switched: false, fromVersion: current.version, toVersion: version,
+    restored: restored.ok === true,
+    error: restored.ok === true ? `引擎 ${version} 启动失败，已恢复 ${current.version}` : `引擎 ${version} 启动失败，恢复 ${current.version} 也未成功`,
+  }
+}
+
+/** 手动回退到首个已保留的旧引擎版本，并安全启动。 */
+async function rollbackEngine(version = null) {
+  const target = version ?? previousEngine()?.toVersion
+  if (!target) return { ok: false, error: '没有可回退的版本' }
+  return switchEngineVersion(target)
 }
 
 /** 从实际启动的 dsh 二进制向上定位 @deepseek-ai/dsh/package.json，读取引擎版本。
@@ -552,7 +699,7 @@ function snapshot() {
     savedIntegrations.push({ id: item.id, target: item.target, snapshotName })
   }
   writeJsonAtomic(join(temp, 'manifest.json'), {
-    createdAt: now(), profile: 'web', profileFiles, integrations: savedIntegrations,
+    createdAt: now(), profile: 'web', engineVersion: detectEngineVersion(), profileFiles, integrations: savedIntegrations,
   })
   const previous = `${LKG}.previous`
   rmSync(previous, { recursive: true, force: true })
@@ -562,10 +709,16 @@ function snapshot() {
   return { ok: true, path: LKG, createdAt: now() }
 }
 
-function restoreLkg() {
-  const savedProfile = join(LKG, 'profile')
+function snapshotPath(id = 'current') {
+  if (id === 'current') return LKG
+  if (id === 'previous') return `${LKG}.previous`
+  throw new Error('unknown recovery snapshot')
+}
+
+function restoreLkg(source = LKG) {
+  const savedProfile = join(source, 'profile')
   if (!existsSync(join(savedProfile, 'package.json'))) throw new Error('last-known-good profile is missing')
-  const manifest = readJson(join(LKG, 'manifest.json'), {})
+  const manifest = readJson(join(source, 'manifest.json'), {})
   const currentProfileFiles = guardianIntegrations().flatMap((item) => item.profileFiles)
   const profileFiles = [...new Set([...(manifest.profileFiles ?? []), ...currentProfileFiles])]
     .filter((name) => typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name))
@@ -573,7 +726,7 @@ function restoreLkg() {
   for (const item of manifest.integrations ?? []) {
     if (typeof item?.target !== 'string' || !isInsideDshHome(item.target)) continue
     if (typeof item.snapshotName !== 'string' || !/^[A-Za-z0-9_-]+$/.test(item.snapshotName)) continue
-    const saved = join(LKG, 'integrations', String(item.snapshotName ?? ''))
+    const saved = join(source, 'integrations', String(item.snapshotName ?? ''))
     if (!existsSync(saved)) continue
     const temp = `${item.target}.recover`
     rmSync(temp, { recursive: true, force: true })
@@ -583,7 +736,7 @@ function restoreLkg() {
     renameSync(temp, item.target)
   }
   updateState({ lastRecovery: now() })
-  return { ok: true, restored: LKG }
+  return { ok: true, restored: source, snapshotAt: manifest.createdAt ?? null }
 }
 
 function digestFile(file) {
@@ -647,22 +800,22 @@ function compareTrees(current, golden, scope) {
 
 /** Return metadata-only drift against last-known-good. File contents and
  * digests never leave Guardian, so secret-bearing config remains private. */
-function configDiff() {
-  if (!existsSync(LKG)) return { ok: true, available: false, changed: false, summary: {}, items: [] }
-  const manifest = readJson(join(LKG, 'manifest.json'), {})
+function configDiff(source = LKG) {
+  if (!existsSync(source)) return { ok: true, available: false, changed: false, summary: {}, items: [] }
+  const manifest = readJson(join(source, 'manifest.json'), {})
   const profileFiles = [...new Set([...(manifest.profileFiles ?? []), ...PROFILE_FILES])]
     .filter((name) => typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name))
   const currentProfile = new Map()
   const savedProfile = new Map()
   for (const name of profileFiles) {
     if (existsSync(join(PROFILE, name))) currentProfile.set(name, digestFile(join(PROFILE, name)))
-    if (existsSync(join(LKG, 'profile', name))) savedProfile.set(name, digestFile(join(LKG, 'profile', name)))
+    if (existsSync(join(source, 'profile', name))) savedProfile.set(name, digestFile(join(source, 'profile', name)))
   }
   const items = compareTrees(currentProfile, savedProfile, 'profile')
   for (const integration of manifest.integrations ?? []) {
     if (typeof integration?.target !== 'string' || !isInsideDshHome(integration.target)) continue
     if (typeof integration.snapshotName !== 'string' || !/^[A-Za-z0-9_-]+$/.test(integration.snapshotName)) continue
-    const saved = join(LKG, 'integrations', integration.snapshotName)
+    const saved = join(source, 'integrations', integration.snapshotName)
     items.push(...compareTrees(collectTree(integration.target), collectTree(saved), `integration:${integration.id}`))
   }
   const summary = { added: 0, modified: 0, deleted: 0, unreadable: 0 }
@@ -672,6 +825,25 @@ function configDiff() {
     snapshotAt: manifest.createdAt ?? state().lastSnapshot ?? null,
     summary, items,
   }
+}
+
+function recoverySnapshots() {
+  return ['current', 'previous'].flatMap((id) => {
+    const path = snapshotPath(id)
+    const manifest = readJson(join(path, 'manifest.json'))
+    if (!manifest) return []
+    const diff = configDiff(path)
+    return [{
+      id,
+      createdAt: manifest.createdAt ?? null,
+      engineVersion: manifest.engineVersion ?? null,
+      profile: manifest.profile ?? 'web',
+      integrations: (manifest.integrations ?? []).map((item) => item.id).filter(Boolean),
+      changed: diff.changed,
+      diffTotal: diff.summary ? Object.values(diff.summary).reduce((sum, value) => sum + Number(value ?? 0), 0) : 0,
+      diffSummary: diff.summary ?? null,
+    }]
+  })
 }
 
 function ensureSafeProfile() {
@@ -756,7 +928,7 @@ async function startSafe(reason) {
   const pid = spawnProfile('safe')
   const result = await waitHealthy('safe')
   updateState({ mode: 'safe', pid, failures: [], lastSuccess: now(), lastError: reason })
-  appendEvent('safe', '服务进入受限运行（安全模式），保持基础可用。')
+  appendEvent('safe', 'Harness 已进入受限运行模式，保持基础可用。', { scope: 'service' })
   log(`safe mode started: ${reason}`)
   return { ok: true, mode: 'safe', pid, reason, ...result }
 }
@@ -793,7 +965,7 @@ async function startProduction({ alreadyChecked = false } = {}) {
         try {
           const result = await waitHealthy('web')
           updateState({ mode: 'recovered', pid: retryPid, failures: [], lastSuccess: now(), lastError: null })
-          appendEvent('recovered', '服务已自动恢复。')
+          appendEvent('recovered', 'Harness 服务已自动恢复。', { scope: 'service' })
           return { ok: true, mode: 'recovered', pid: retryPid, ...result }
         } catch {}
       }
@@ -818,7 +990,9 @@ async function watchdog() {
   if (await isUp()) return { ok: true, action: 'healthy' }
   const failures = (state().failures ?? []).filter((stamp) => Date.parse(stamp) > Date.now() - 10 * 60_000)
   if (failures.length >= 3) return await startSafe('crash-loop threshold reached')
-  return { ...(await startProduction()), action: 'restarted' }
+  const result = await startProduction()
+  if (result.ok) appendEvent('restarted', 'Harness 服务中断后已由桌面守护组件重新拉起。', { scope: 'service' })
+  return { ...result, action: 'restarted' }
 }
 
 async function status() {
@@ -838,6 +1012,8 @@ async function status() {
     update: readJson(UPDATE_STATE_FILE),
     operation: readJson(OPERATION_STATE_FILE),
     previousVersion: previousEngine()?.toVersion ?? null,
+    engineHistory: engineHistory(),
+    recoverySnapshots: recoverySnapshots(),
     recentEvents: recentEvents(),
   }
 }
@@ -847,10 +1023,17 @@ async function main() {
     return output({ ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION, capabilities: CAPABILITIES })
   }
   if (command === 'status') return output(await status())
-  if (command === 'diff') return output(configDiff())
+  if (command === 'engine-history') return output({ ok: true, current: activeEngineSelection(), history: engineHistory(), maxRetained: MAX_RETAINED_ENGINES })
+  if (command === 'recovery-snapshots') return output({ ok: true, snapshots: recoverySnapshots() })
+  if (command === 'diff') {
+    const index = process.argv.indexOf('--snapshot')
+    const id = index >= 0 ? process.argv[index + 1] : 'current'
+    return output(configDiff(snapshotPath(id)))
+  }
   if (command === 'preflight') {
     beginOperation('preflight', '正在隔离预检正式配置…')
     const result = finishOperation(await preflight({ smoke: !process.argv.includes('--quick') }), '完整预检通过。')
+    appendEvent('preflight', result.ok ? 'Harness 启动完整性验证通过。' : 'Harness 启动完整性验证未通过。', { scope: 'service' })
     output(result)
     if (!result.ok) process.exitCode = 1
     return
@@ -875,7 +1058,9 @@ async function main() {
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
       beginOperation('restart', '准备安全重启…')
-      return output(finishOperation(await restartSafely(), '安全重启完成。'))
+      const result = finishOperation(await restartSafely(), '安全重启完成。')
+      appendEvent('restarted', result.ok ? 'Harness 服务已安全重新启动。' : 'Harness 服务重新启动未完成。', { scope: 'service' })
+      return output(result)
     }
     if (command === 'update') {
       const index = process.argv.indexOf('--version')
@@ -888,16 +1073,37 @@ async function main() {
     if (command === 'rollback') {
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
+      const index = process.argv.indexOf('--version')
+      const version = index >= 0 ? process.argv[index + 1] : null
       beginOperation('rollback', '准备回到之前的版本…')
-      return output(finishOperation(await rollbackEngine(), '已回到之前的版本并确认可用。'))
+      return output(finishOperation(await rollbackEngine(version), '已回到之前的版本并确认可用。'))
+    }
+    if (command === 'switch-engine') {
+      const index = process.argv.indexOf('--version')
+      const version = index >= 0 ? process.argv[index + 1] : null
+      beginOperation('switch-engine', `准备切换 Harness 引擎到 ${version ?? '指定版本'}…`)
+      return output(finishOperation(await switchEngineVersion(version), 'Harness 引擎版本切换完成。'))
+    }
+    if (command === 'forget-engine-version') {
+      const index = process.argv.indexOf('--version')
+      const version = index >= 0 ? process.argv[index + 1] : null
+      return output(forgetEngineVersion(version))
     }
     if (command === 'recover') {
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
-      beginOperation('recover', '正在恢复黄金版本…')
-      restoreLkg()
-      operationProgress(65, '黄金版本已恢复，正在安全启动…')
-      return output(finishOperation(await startProduction(), '黄金版本已恢复并启动。'))
+      const index = process.argv.indexOf('--snapshot')
+      const snapshotId = index >= 0 ? process.argv[index + 1] : 'current'
+      const source = snapshotPath(snapshotId)
+      const manifest = readJson(join(source, 'manifest.json'), {})
+      beginOperation('recover', '正在恢复运行配置…')
+      restoreLkg(source)
+      operationProgress(65, '运行配置已恢复，正在安全启动…')
+      const result = finishOperation(await startProduction(), '运行配置已恢复并启动。')
+      appendEvent('config-recovered', result.ok
+        ? `已恢复 ${manifest.createdAt ?? '所选时间'} 的运行配置。`
+        : `恢复 ${manifest.createdAt ?? '所选时间'} 的运行配置未完成。`, { scope: 'config' })
+      return output(result)
     }
     if (command === 'safe-mode') {
       writeFileSync(ENABLED_FILE, now() + '\n')
@@ -923,4 +1129,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
 }
 
-export { appendEvent, bootManifest, configDiff, copyProfileFiles, ensureSafeProfile, guardianIntegrations, previousEngine, recentEvents, restoreLkg, snapshot, validateProfileFiles }
+export {
+  appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
+  forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
+  pruneEngineEntries, restoreLkg, snapshot, switchEngineVersion, validateProfileFiles,
+}

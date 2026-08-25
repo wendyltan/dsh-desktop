@@ -113,11 +113,17 @@ final class AppStore: NSObject, ObservableObject {
         updateStatusItemBalance()
     }
 
+    func updateMenuBarBalanceVisibility(_ visible: Bool) {
+        settings.showBalanceInMenuBar = visible
+        settings.save()
+        updateStatusItemBalance()
+    }
+
     // MARK: - macOS 菜单栏
 
     private var statusItem: NSStatusItem?
     private var updateMenuItem: NSMenuItem?
-    private var desktopVersion: String {
+    var desktopVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "开发版"
     }
 
@@ -138,23 +144,18 @@ final class AppStore: NSObject, ObservableObject {
         version.isEnabled = false
         menu.addItem(version)
         menu.addItem(.separator())
-        let open = NSMenuItem(title: "打开客户端窗口", action: #selector(menuOpenHarness), keyEquivalent: "")
-        open.target = self
-        menu.addItem(open)
-        let browser = NSMenuItem(title: "在浏览器中打开网页", action: #selector(menuOpenBrowser), keyEquivalent: "")
-        browser.target = self
-        menu.addItem(browser)
-        let reload = NSMenuItem(title: "重新加载当前页面", action: #selector(menuReloadPage), keyEquivalent: "r")
-        reload.target = self
-        menu.addItem(reload)
         let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
         ask.target = self
         menu.addItem(ask)
+        let open = NSMenuItem(title: "打开客户端窗口", action: #selector(menuOpenHarness), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
         let status = NSMenuItem(title: "当前状态…", action: #selector(menuShowProtection), keyEquivalent: "")
         status.target = self
         menu.addItem(status)
         let check = NSMenuItem(title: "检查更新…", action: #selector(menuCheckUpdate), keyEquivalent: "")
         check.target = self
+        check.isHidden = true
         menu.addItem(check)
         updateMenuItem = check
         menu.addItem(.separator())
@@ -172,29 +173,38 @@ final class AppStore: NSObject, ObservableObject {
     /// 有新版本时，把「检查更新」菜单项改成提示文案。
     func refreshUpdateMenuItem() {
         guard let item = updateMenuItem else { return }
-        if updateInstallAvailable, let v = updateVersion {
-            item.title = updateBusy ? "正在更新…" : "可更新到 \(v)…"
-        } else {
-            item.title = "检查更新…"
-        }
+        item.isHidden = !updateInstallAvailable && !updateBusy
+        if updateBusy { item.title = "正在更新…" }
+        else if let v = updateVersion { item.title = "可更新到 \(v)…" }
     }
 
     /// 刷新菜单栏余额文字与颜色（绿/红按阈值）。
     func updateStatusItemBalance() {
         guard let button = statusItem?.button else { return }
         button.attributedTitle = balanceAttributedTitle()
+        if !settings.showBalanceInMenuBar {
+            button.toolTip = "DeepSeek Harness"
+        } else if balanceError != nil {
+            button.toolTip = "DeepSeek Harness · 余额暂时不可用"
+        } else {
+            button.toolTip = "DeepSeek Harness · 账户余额"
+        }
     }
 
     private func balanceAttributedTitle() -> NSAttributedString {
+        guard settings.showBalanceInMenuBar else { return NSAttributedString(string: "") }
         let text: String
-        if let b = balance?.balanceInfos.first {
+        let color: NSColor
+        if balanceError != nil {
+            text = "余额不可用"
+            color = .systemOrange
+        } else if let b = balance?.balanceInfos.first {
             text = "¥\(b.totalBalance)"
-        } else if balanceError != nil {
-            text = "余额获取失败"
+            color = balanceLow ? .systemRed : .labelColor
         } else {
             text = "余额 ··"
+            color = .secondaryLabelColor
         }
-        let color: NSColor = balanceLow ? .systemRed : .systemGreen
         return NSAttributedString(string: text, attributes: [
             .foregroundColor: color,
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
@@ -224,36 +234,9 @@ final class AppStore: NSObject, ObservableObject {
             w.makeKeyAndOrderFront(nil)
         }
     }
-    func openBrowser() {
-        NSWorkspace.shared.open(URL(string: ServerManager.url)!)
-    }
-
     func openHarness() { showClientPanel() }
-
-    /// 供用户交给技术支持的最小诊断摘要。只复制状态和版本，不复制错误正文、密钥、
-    /// 提问内容、会话内容或配置文件。
-    func copyDiagnosticReport() {
-        let response = guardianStatus
-        let running = response?.up == true ? "可以连接" : "暂时无法连接"
-        let operation = response?.operation
-        let lines = [
-            "DeepSeek Harness 桌面端诊断报告（已脱敏）",
-            "生成时间：\(ISO8601DateFormatter().string(from: Date()))",
-            "当前状态：\(running)",
-            "引擎版本：\(resolvedEngine ?? "未识别")",
-            "最近操作：\(operation?.command ?? "无") · \(operation?.phase ?? "无")",
-            "最近成功检查：\(response?.state?.lastSuccess ?? "无")",
-            "隐私说明：本报告不包含密钥、令牌、提问内容、会话正文、完整配置或原始错误。",
-        ]
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
-        guardianMessage = "脱敏诊断报告已复制，可直接发送给技术支持。"
-    }
     @objc private func menuOpenHarness() { openHarness() }
-    @objc private func menuOpenBrowser() { openBrowser() }
-    @objc private func menuReloadPage() { reloadWebView() }
-    @objc private func menuQuickPrompt() { quickPrompt.toggle() }
+    @objc private func menuQuickPrompt() { showQuickPrompt() }
     @objc private func menuCheckUpdate() {
         checkUpdate(force: true)
     }
@@ -543,15 +526,17 @@ final class AppStore: NSObject, ObservableObject {
         }
     }
 
-    private func runGuardian(_ command: String, success: String, reloadWeb: Bool = false) {
+    private func runGuardian(_ command: String, args: [String] = [], success: String, reloadWeb: Bool = false) {
         guardianBusy = true
         guardianError = nil
         guardianMessage = "正在检查并处理。"
         DispatchQueue.global(qos: .userInitiated).async {
-            let (response, error) = GuardianService.run(command)
+            let (response, error) = GuardianService.run(command, args: args)
             DispatchQueue.main.async {
                 self.guardianBusy = false
-                self.guardianStatus = response ?? self.guardianStatus
+                if response?.up != nil || response?.guardianVersion != nil {
+                    self.guardianStatus = response
+                }
                 self.guardianError = error
                 self.guardianMessage = error == nil ? success : "操作失败"
                 if error == nil && (command == "preflight" || command == "recover") {
@@ -560,7 +545,7 @@ final class AppStore: NSObject, ObservableObject {
                         protocolVersion: EventBridge.protocolVersion,
                         id: "guardian-\(command)-\(Int(Date().timeIntervalSince1970))",
                         type: command == "recover" ? "guardian.recovered" : "guardian.preflight",
-                        title: command == "recover" ? "Guardian 恢复完成" : "Guardian 预检通过",
+                        title: command == "recover" ? "运行配置恢复完成" : "启动完整性验证通过",
                         message: success,
                         sessionId: nil, callbackURL: nil, promptURL: nil
                     ))
@@ -580,31 +565,34 @@ final class AppStore: NSObject, ObservableObject {
         runGuardian("restart", success: "服务已重新连接并确认可用。", reloadWeb: true)
     }
 
-    func recoverWithGuardian() {
-        runGuardian("recover", success: "已恢复到上一次正常状态。", reloadWeb: true)
+    func recoverConfiguration(snapshot: String) {
+        runGuardian(
+            "recover",
+            args: ["--snapshot", snapshot],
+            success: "所选运行配置已恢复并确认可用。",
+            reloadWeb: true
+        )
+    }
+
+    func switchEngineVersion(_ version: String) {
+        runGuardian(
+            "switch-engine",
+            args: ["--version", version],
+            success: "Harness 引擎已切换到 v\(version) 并确认可用。",
+            reloadWeb: true
+        )
+    }
+
+    func forgetEngineVersion(_ version: String) {
+        runGuardian(
+            "forget-engine-version",
+            args: ["--version", version],
+            success: "已不再保留 Harness 引擎 v\(version)。"
+        )
     }
 
     func enterGuardianSafeMode() {
         runGuardian("safe-mode", success: "已进入安全模式。", reloadWeb: true)
-    }
-
-    /// 手动回退到上一个引擎版本（若存在），并安全重启确认。
-    func rollbackToPreviousVersion() {
-        guardianBusy = true
-        guardianError = nil
-        guardianMessage = "正在回到之前的版本…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (response, error) = GuardianService.rollback()
-            DispatchQueue.main.async {
-                self.guardianBusy = false
-                self.guardianStatus = response ?? self.guardianStatus
-                self.guardianError = error
-                self.guardianMessage = error == nil ? "已回到之前的版本。" : "回退失败"
-                self.refreshServerStatus()
-                self.reloadWebView()
-                self.refreshGuardian(deep: true)
-            }
-        }
     }
 
     // MARK: - 自动更新检查
@@ -617,6 +605,7 @@ final class AppStore: NSObject, ObservableObject {
     @Published var updateProgressPercent: Int?
     @Published var showUpdateAlert = false
     @Published var updateMessage = ""
+    @Published var engineRetentionVersion: String?
     private var updateTimer: Timer?
     private var engineProgressTimer: Timer?
 
@@ -657,6 +646,7 @@ final class AppStore: NSObject, ObservableObject {
     /// dsh-ops 只显示状态，不直接修改核心引擎。
     func performEngineUpdate() {
         guard !updateBusy, updateInstallAvailable, let version = updateVersion else { return }
+        engineRetentionVersion = nil
         updateBusy = true
         updateProgressPercent = 10
         showUpdateAlert = false
@@ -679,7 +669,11 @@ final class AppStore: NSObject, ObservableObject {
                 if response?.updated == true, response?.effectiveMode == "production" {
                     self.updateAvailable = false
                     self.updateInstallAvailable = false
-                    self.updateMessage = "更新已完成：DeepSeek Harness 已更新到 \(version)，并已确认可以正常使用。"
+                    self.engineRetentionVersion = response?.fromVersion
+                    self.updateMessage = "更新已完成：Harness 引擎已更新到 \(version)，并已确认可以正常使用。"
+                    if let old = response?.fromVersion {
+                        self.updateMessage += "\n\n旧引擎 v\(old) 已暂时保留。建议保留以便需要时快速切回；系统最多保留两个旧版本。"
+                    }
                     self.refreshUpdateMenuItem()
                     self.refreshServerStatus()
                     self.refreshGuardian(deep: true)
@@ -727,5 +721,15 @@ final class AppStore: NSObject, ObservableObject {
         }
         updateAvailable = false
         refreshUpdateMenuItem()
+    }
+
+    func keepPreviousEngineVersion() {
+        engineRetentionVersion = nil
+    }
+
+    func discardPreviousEngineVersion() {
+        guard let version = engineRetentionVersion else { return }
+        engineRetentionVersion = nil
+        forgetEngineVersion(version)
     }
 }

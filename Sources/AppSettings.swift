@@ -4,6 +4,7 @@ import Foundation
 struct AppSettings: Codable {
     var balanceRefreshSeconds: Int = 300      // 余额自动刷新间隔（秒）
     var balanceWarningThreshold: Double = 20  // 余额预警阈值：低于此值显示红色
+    var showBalanceInMenuBar: Bool = true     // 菜单栏是否显示余额数字
     var quickPromptShortcut: Shortcut = .quickPromptDefault  // 快速提问全局快捷键
     var guardianShortcut: Shortcut = .guardianDefault        // 当前状态全局快捷键
     var quickPromptMode: String = "new"       // 快速提问模式：new（新会话）/ existing（已有会话）
@@ -14,7 +15,7 @@ struct AppSettings: Codable {
     var dismissedUpdateVersion: String? = nil // 用户选择「以后再说」的引擎版本
 
     enum CodingKeys: String, CodingKey {
-        case balanceRefreshSeconds, balanceWarningThreshold,
+        case balanceRefreshSeconds, balanceWarningThreshold, showBalanceInMenuBar,
              quickPromptShortcut, guardianShortcut,
              quickPromptMode, quickPromptProvider, quickPromptModel, quickPromptEffort,
              lastUpdateCheck, dismissedUpdateVersion
@@ -27,6 +28,7 @@ struct AppSettings: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         balanceRefreshSeconds = try c.decodeIfPresent(Int.self, forKey: .balanceRefreshSeconds) ?? 300
         balanceWarningThreshold = try c.decodeIfPresent(Double.self, forKey: .balanceWarningThreshold) ?? 20
+        showBalanceInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showBalanceInMenuBar) ?? true
         quickPromptShortcut = try c.decodeIfPresent(Shortcut.self, forKey: .quickPromptShortcut) ?? .quickPromptDefault
         guardianShortcut = try c.decodeIfPresent(Shortcut.self, forKey: .guardianShortcut) ?? .guardianDefault
         quickPromptMode = try c.decodeIfPresent(String.self, forKey: .quickPromptMode) ?? "new"

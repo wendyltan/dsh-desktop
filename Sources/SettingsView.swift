@@ -66,9 +66,11 @@ struct SettingsView: View {
     @State private var promptModelId = ""
     @State private var promptEffort = ""
 
+    private var usesNewSession: Bool { promptMode == "new" }
+
     var body: some View {
         Form {
-            Section("快捷键") {
+            Section {
                 ShortcutRecorder(title: "快速提问", shortcut: store.settings.quickPromptShortcut) {
                     store.updateQuickPromptShortcut($0)
                 }
@@ -77,14 +79,16 @@ struct SettingsView: View {
                 }
                 Text("点击后按下新组合键即可修改，按 Esc 取消；改动立即生效。")
                     .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Label("快捷键", systemImage: "keyboard")
             }
-            Section("快速提问") {
+            Section {
                 Picker("提问模式", selection: Binding(
                     get: { promptMode },
                     set: { promptMode = $0; store.updateQuickPromptMode($0) }
                 )) {
                     Text("新会话（推荐）").tag("new")
-                    Text("已有会话").tag("existing")
+                    Text("继续已有会话").tag("existing")
                 }
                 Picker("新会话模型", selection: Binding(
                     get: { promptModelId },
@@ -95,24 +99,34 @@ struct SettingsView: View {
                         Text(model.name).tag(model.id)
                     }
                 }
+                .disabled(!usesNewSession)
                 Picker("新会话力度", selection: Binding(
                     get: { promptEffort },
                     set: { promptEffort = $0; store.updateQuickPromptEffort($0.isEmpty ? nil : $0) }
                 )) {
-                    Text("跟随引擎（默认 high）").tag("")
-                    Text("off（不思考）").tag("off")
-                    Text("low").tag("low")
-                    Text("high").tag("high")
-                    Text("max").tag("max")
+                    Text("跟随引擎（默认深入）").tag("")
+                    Text("直接回答 · 不思考").tag("off")
+                    Text("快速 · 轻度思考").tag("low")
+                    Text("深入 · 充分思考").tag("high")
+                    Text("最强 · 最大力度").tag("max")
                 }
+                .disabled(!usesNewSession)
                 HStack {
-                    Text("模型列表随连接自动刷新。")
+                    Text(usesNewSession ? "模型列表随连接自动刷新。" : "已有会话会沿用原会话的模型与思考力度。")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("刷新") { store.refreshQuickPromptModels() }
+                    if usesNewSession {
+                        Button("刷新模型") { store.refreshQuickPromptModels() }
+                    }
                 }
+            } header: {
+                Label("快速提问", systemImage: "sparkles")
             }
-            Section("余额") {
+            Section {
+                Toggle("在菜单栏显示余额", isOn: Binding(
+                    get: { store.settings.showBalanceInMenuBar },
+                    set: { store.updateMenuBarBalanceVisibility($0) }
+                ))
                 Stepper(value: Binding(
                     get: { intervalMinutes },
                     set: { intervalMinutes = $0; saveBalance() }
@@ -129,10 +143,14 @@ struct SettingsView: View {
                         .frame(width: 90)
                         .multilineTextAlignment(.trailing)
                 }
+                Text("余额低于阈值时，菜单栏数字会变红并发送一次提醒。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Label("余额提醒", systemImage: "creditcard")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 500)
+        .frame(width: 500, height: 550)
         .onAppear {
             intervalMinutes = max(1, store.settings.balanceRefreshSeconds / 60)
             threshold = store.settings.balanceWarningThreshold
@@ -164,7 +182,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show(store: AppStore) {
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 550),
                 styleMask: [.titled, .closable],
                 backing: .buffered, defer: false
             )
