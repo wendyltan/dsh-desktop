@@ -1,5 +1,25 @@
 import Foundation
 
+enum EngineUpdateChannel: String, CaseIterable, Codable, Hashable, Identifiable {
+    case latest
+    case alpha
+
+    var id: String { rawValue }
+    var npmTag: String { rawValue }
+    var title: String {
+        switch self {
+        case .latest: return "默认版本（latest）"
+        case .alpha: return "体验版本（alpha）"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .latest: return "优先选择 npm 默认发布版本，适合日常稳定使用。"
+        case .alpha: return "包含预览中的新功能，可能出现兼容性问题；更新后会强制保留当前版本以便回退。"
+        }
+    }
+}
+
 /// 自动更新检查：对比 npm 上 @deepseek-ai/dsh（Harness 引擎）的最新版本。
 /// 说明：本客户端由本地源码构建（~/.dsh/dsh-desktop），没有独立发布渠道；
 /// 其核心能力来自 npm 上的 harness 引擎包，因此以引擎版本作为更新信号。
@@ -64,20 +84,24 @@ enum UpdateChecker {
         return version
     }
 
-    /// 查询 npm 最新版本，返回 (最新版本号, 错误信息)。失败时 latest 为 nil。
-    static func checkEngine() -> (latest: String?, error: String?) {
+    /// 查询指定 npm 发布通道，返回 (版本号, 错误信息)。失败时 latest 为 nil。
+    static func checkEngine(channel: EngineUpdateChannel = .latest) -> (latest: String?, error: String?) {
         let (json, err) = httpGetJSON(npmPackument,
                                       headers: ["Accept": "application/json"],
                                       timeout: 20)
         guard err == nil else { return (nil, err) }
-        guard let json = json as? [String: Any],
-              let tags = json["dist-tags"] as? [String: Any] else {
-            return (nil, "npm 返回数据无法解析")
-        }
-        guard let latest = tags["latest"] as? String, isVersion(latest) else {
-            return (nil, "npm 未返回 latest 引擎版本")
+        guard let latest = channelVersion(from: json, channel: channel) else {
+            return (nil, "npm 未返回\(channel.title)引擎版本")
         }
         return (latest, nil)
+    }
+
+    static func channelVersion(from packument: Any?, channel: EngineUpdateChannel) -> String? {
+        guard let json = packument as? [String: Any],
+              let tags = json["dist-tags"] as? [String: Any],
+              let version = tags[channel.npmTag] as? String,
+              isVersion(version) else { return nil }
+        return version
     }
 
     private static func isVersion(_ value: String) -> Bool {

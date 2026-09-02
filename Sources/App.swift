@@ -82,8 +82,12 @@ struct ContentView: View {
         }
         .alert(store.engineRetentionVersion != nil ? "是否保留旧引擎？" : "更新检查", isPresented: $store.showUpdateAlert) {
             if store.engineRetentionVersion != nil {
-                Button("保留旧版本（推荐）") { store.keepPreviousEngineVersion() }
-                Button("不保留旧版本", role: .destructive) { store.discardPreviousEngineVersion() }
+                Button(store.engineRetentionMandatory ? "保留旧版本（必须）" : "保留旧版本（推荐）") {
+                    store.keepPreviousEngineVersion()
+                }
+                if !store.engineRetentionMandatory {
+                    Button("不保留旧版本", role: .destructive) { store.discardPreviousEngineVersion() }
+                }
             } else if store.updateInstallAvailable {
                 Button("一键更新") {
                     store.performEngineUpdate()

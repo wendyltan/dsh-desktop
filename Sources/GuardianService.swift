@@ -53,6 +53,7 @@ struct GuardianEvent: Decodable, Identifiable {
 struct GuardianEngineVersion: Decodable, Identifiable {
     let active: String
     let version: String
+    let channel: String?
     let installedAt: String?
     let validatedAt: String?
     let retainedAt: String?
@@ -84,6 +85,7 @@ struct GuardianResponse: Decodable {
     let mode: String?
     let pid: Int?
     let lastKnownGood: Bool?
+    let engineChannel: String?
     let integrations: [GuardianIntegrationState]?
     let live: GuardianLiveState?
     let stage: String?
@@ -198,6 +200,7 @@ enum GuardianService {
             mode: nil,
             pid: state?.pid,
             lastKnownGood: FileManager.default.fileExists(atPath: lastKnownGoodPath),
+            engineChannel: nil,
             integrations: nil,
             live: nil,
             stage: nil,

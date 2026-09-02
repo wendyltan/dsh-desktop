@@ -84,12 +84,13 @@ try {
   writeFileSync(currentEngine, '')
   writeFileSync(previousEngine, '')
   writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({
-    active: currentEngine, version: '1.2.0',
+    active: currentEngine, version: '1.2.0', channel: 'alpha',
     history: [{ active: previousEngine, version: '1.1.0', retainedAt: new Date().toISOString() }],
   }))
   assert.deepEqual(guardian.previousEngine(), { fromVersion: '1.2.0', toVersion: '1.1.0' })
   assert.equal(guardian.previousEngine()?.toVersion, '1.1.0')
   assert.equal(guardian.engineHistory()[0].installed, true)
+  assert.equal(guardian.engineHistory()[0].channel, 'latest')
   const retention = guardian.pruneEngineEntries([
     { active: currentEngine, version: '1.2.0' },
     { active: previousEngine, version: '1.1.0' },
@@ -103,6 +104,11 @@ try {
   assert.equal(events[0].type, 'updated')
   assert.equal(events[0].toVersion, '1.2.0')
   assert.equal(events[0].scope, 'engine')
+  assert.equal(guardian.forgetEngineVersion('1.1.0').error, '当前使用 alpha 时必须保留 latest 回退版本')
+  writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({
+    active: currentEngine, version: '1.2.0', channel: 'latest',
+    history: [{ active: previousEngine, version: '1.1.0', channel: 'latest', retainedAt: new Date().toISOString() }],
+  }))
   assert.equal(guardian.forgetEngineVersion('1.1.0').removed, true)
   assert.equal(guardian.engineHistory().length, 0)
 

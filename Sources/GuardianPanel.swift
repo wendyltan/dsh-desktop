@@ -142,6 +142,7 @@ struct GuardianPanel: View {
             case .engines:
                 EngineVersionManager(
                     currentVersion: store.resolvedEngine,
+                    currentChannel: response?.engineChannel,
                     versions: response?.engineHistory ?? []
                 )
                 .environmentObject(store)
@@ -561,6 +562,7 @@ private struct EngineVersionManager: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let currentVersion: String?
+    let currentChannel: String?
     let versions: [GuardianEngineVersion]
     @State private var pendingAction: EngineManagerAction?
 
@@ -577,7 +579,7 @@ private struct EngineVersionManager: View {
                     Label("当前使用", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(Color.green)
                     Spacer()
-                    Text(currentVersion.map { "v\($0)" } ?? "未识别")
+                    Text("\(currentVersion.map { "v\($0)" } ?? "未识别")\(engineChannelSuffix(currentChannel))")
                         .font(.headline.monospacedDigit())
                 }
                 Text("桌面端与守护组件：v\(store.desktopVersion)")
@@ -605,7 +607,8 @@ private struct EngineVersionManager: View {
                                 .frame(width: 30, height: 30)
                                 .background(Color.deepseekBlue.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Harness 引擎 v\(version.version)").font(.callout.weight(.medium))
+                                Text("Harness 引擎 v\(version.version)\(engineChannelSuffix(version.channel))")
+                                    .font(.callout.weight(.medium))
                                 Text(version.installed
                                      ? "已保留在本机 · 最后验证 \(formatGuardianDate(version.validatedAt))"
                                      : "本机文件已缺失，无法切换")
@@ -620,6 +623,7 @@ private struct EngineVersionManager: View {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.borderless)
+                            .disabled(currentChannel == "alpha" && version.channel == "latest")
                             .help("不再保留这个版本")
                         }
                         .padding(12)
@@ -629,7 +633,7 @@ private struct EngineVersionManager: View {
                 }
             }
 
-            Text("更新后默认询问是否保留旧版本；最多保留两个，通过预检后才允许切换。")
+            Text("alpha 更新会保留更新前的 latest 版本；若 alpha 启动失败且重试仍失败，Guardian 会先尝试自动切回 latest，失败才进入安全模式。最多保留两个版本，通过预检后才允许切换。")
                 .font(.caption).foregroundStyle(.secondary)
 
             HStack {
@@ -663,6 +667,14 @@ private struct EngineVersionManager: View {
                 )
             }
         }
+    }
+}
+
+private func engineChannelSuffix(_ channel: String?) -> String {
+    switch channel {
+    case "alpha": return " · alpha"
+    case "latest": return " · latest"
+    default: return ""
     }
 }
 

@@ -10,8 +10,8 @@
 2. 在临时 `DSH_HOME` 运行 `--dump-config`，捕获 YAML/patch 组合错误。
 3. 在随机临时端口启动完整 web profile，下载并验证全部 client bundle，并检查插件自行声明的 Guardian 健康端点。
 4. 通过后保存 last-known-good 运行配置快照，再切换正式 3080 服务。
-5. 正式启动失败时恢复运行配置快照；仍失败则启动只含 base + web-app 的安全模式。
-6. launchd watchdog 每 60 秒检查一次。10 分钟内连续失败 3 次时直接进入安全模式，避免重启循环。
+5. 正式启动失败时恢复运行配置快照；当前是 alpha 且重试仍失败时，先尝试切回已保留的 latest；回退失败或没有可用基线时才启动只含 base + web-app 的安全模式。
+6. launchd watchdog 每 60 秒检查一次。服务不可用时若当前是 alpha，优先尝试切回 latest；其他情况在 10 分钟内连续失败 3 次时进入安全模式，避免重启循环。
 
 ## 常用命令
 
@@ -24,6 +24,7 @@ node ~/.dsh/guardian/guardian.mjs recovery-snapshots --json
 node ~/.dsh/guardian/guardian.mjs recover --snapshot current --json
 node ~/.dsh/guardian/guardian.mjs engine-history --json
 node ~/.dsh/guardian/guardian.mjs switch-engine --version 0.1.1-rc.2 --json
+node ~/.dsh/guardian/guardian.mjs update --version 0.1.2-alpha.3 --channel alpha --json
 node ~/.dsh/guardian/guardian.mjs safe-mode --json
 ~/.dsh/dsh-desktop/stop.sh
 ~/.dsh/dsh-desktop/launch.sh
@@ -31,7 +32,7 @@ node ~/.dsh/guardian/guardian.mjs safe-mode --json
 
 手动 `stop.sh` 会关闭 watchdog；下一次 `launch.sh` 会重新启用。
 
-运行配置恢复与引擎版本切换是两套独立机制：前者恢复 Web profile 和受保护插件，不改变引擎；后者只切换 Harness 引擎。引擎更新后最多保留两个旧版本，切换前必须通过隔离预检，启动失败则自动恢复当前版本。
+运行配置恢复与引擎版本切换是两套独立机制：前者恢复 Web profile 和受保护插件，不改变引擎；后者只切换 Harness 引擎。引擎更新后最多保留两个旧版本，alpha 更新会优先保留更新前的 latest；切换前必须通过隔离预检，启动失败则自动恢复当前版本。alpha 正式启动失败且重试仍失败时，会先尝试自动切回保留的 latest。
 
 ## 可选插件集成
 

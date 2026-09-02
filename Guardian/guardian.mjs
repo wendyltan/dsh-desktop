@@ -111,6 +111,9 @@ function normalizeEngineEntry(entry) {
   return {
     active: entry.active,
     version: entry.version,
+    // 旧版 engine.json 没有 channel；所有非 alpha 版本都按 latest 处理，
+    // 这样升级到 alpha 后仍能识别并保护旧的默认版本。
+    channel: validReleaseChannel(entry.channel) ? entry.channel : inferredEngineChannel(entry.version),
     installedAt: entry.installedAt ?? null,
     validatedAt: entry.validatedAt ?? null,
     retainedAt: entry.retainedAt ?? null,
@@ -139,7 +142,9 @@ function activeEngineSelection(selected = readJson(ENGINE_STATE_FILE, {})) {
   try {
     const active = resolveDshBin()
     const version = detectEngineVersion()
-    if (active && validEngineVersion(version)) return { active, version, installedAt: null, validatedAt: null, retainedAt: null }
+    if (active && validEngineVersion(version)) {
+      return { active, version, channel: inferredEngineChannel(version), installedAt: null, validatedAt: null, retainedAt: null }
+    }
   } catch {}
   return normalized
 }
@@ -244,6 +249,14 @@ function validEngineVersion(value) {
   return typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)
 }
 
+function validReleaseChannel(value) {
+  return value === 'latest' || value === 'alpha'
+}
+
+function inferredEngineChannel(version) {
+  return typeof version === 'string' && /-alpha(?:[.-]|$)/.test(version) ? 'alpha' : 'latest'
+}
+
 function managedEngineDirectory(active) {
   if (typeof active !== 'string') return null
   const absolute = resolve(active)
@@ -290,6 +303,9 @@ function forgetEngineVersion(version) {
   const history = retainedEngines(selected)
   const removed = history.filter((item) => item.version === version)
   if (removed.length === 0) return { ok: true, removed: false, version }
+  if (current?.channel === 'alpha' && removed.some((item) => item.channel === 'latest')) {
+    return { ok: false, error: '当前使用 alpha 时必须保留 latest 回退版本' }
+  }
   writeEngineSelection(current, history.filter((item) => item.version !== version))
   for (const item of removed) removeManagedEngine(item)
   appendEvent('engine-forgotten', `已不再保留引擎 ${version}。`, { toVersion: version, scope: 'engine' })
@@ -345,12 +361,14 @@ function installEngine(version) {
   })
 }
 
-async function updateEngine(version) {
+async function updateEngine(version, channel = null) {
   const current = detectEngineVersion()
   if (current === version) return { ok: true, updated: false, alreadyCurrent: true, version }
+  const targetChannel = validReleaseChannel(channel) ? channel : (inferredEngineChannel(version) ?? 'latest')
   updateProgress({ phase: 'preparing', percent: 0, version, fromVersion: current, message: `准备更新引擎 ${version}` })
   const originalState = readJson(ENGINE_STATE_FILE)
-  const currentSelection = activeEngineSelection(originalState ?? {})
+  const selectedCurrent = activeEngineSelection(originalState ?? {})
+  const currentSelection = selectedCurrent
   const priorHistory = retainedEngines(originalState ?? {})
   updateProgress({ phase: 'downloading', percent: 10, version, message: '正在下载引擎及其依赖（预计需要几分钟）' })
   let installed
@@ -364,8 +382,11 @@ async function updateEngine(version) {
     currentSelection ? { ...currentSelection, retainedAt: now() } : null,
     ...priorHistory,
   ], version)
-  const planned = pruneEngineEntries(historyCandidates)
-  writeEngineSelection(next, planned.retained)
+  const orderedHistory = targetChannel === 'alpha'
+    ? [...historyCandidates.filter((item) => item.channel === 'latest'), ...historyCandidates.filter((item) => item.channel !== 'latest')]
+    : historyCandidates
+  const planned = pruneEngineEntries(orderedHistory)
+  writeEngineSelection({ ...next, channel: targetChannel }, planned.retained)
 
   updateProgress({ phase: 'preflight', percent: 65, version, message: '下载完成，正在执行隔离预检' })
   const checked = await preflight()
@@ -419,7 +440,7 @@ async function updateEngine(version) {
   }
 }
 
-async function switchEngineVersion(version) {
+async function switchEngineVersion(version, { allowEngineRollback = false } = {}) {
   if (!validEngineVersion(version)) return { ok: false, error: '请选择有效的引擎版本' }
   const originalState = readJson(ENGINE_STATE_FILE, {})
   const current = activeEngineSelection(originalState)
@@ -443,8 +464,8 @@ async function switchEngineVersion(version) {
   }
   snapshot()
   operationProgress(70, `验证通过，正在切换到 Harness 引擎 ${version}…`)
-  const started = await startProduction({ alreadyChecked: true })
-  if (started.ok && detectEngineVersion() === version) {
+  const started = await startProduction({ alreadyChecked: true, allowEngineRollback })
+  if (started.ok && started.mode !== 'safe' && detectEngineVersion() === version) {
     const selected = readJson(ENGINE_STATE_FILE, {})
     writeEngineSelection({ ...selected, validatedAt: now() }, retainedEngines(selected))
     for (const item of planned.dropped) removeManagedEngine(item)
@@ -453,12 +474,39 @@ async function switchEngineVersion(version) {
   }
 
   writeJsonAtomic(ENGINE_STATE_FILE, originalState)
-  const restored = await startProduction()
+  const restored = await startProduction({ allowEngineRollback })
   return {
     ok: false, switched: false, fromVersion: current.version, toVersion: version,
     restored: restored.ok === true,
     error: restored.ok === true ? `引擎 ${version} 启动失败，已恢复 ${current.version}` : `引擎 ${version} 启动失败，恢复 ${current.version} 也未成功`,
   }
+}
+
+/** alpha 连续启动失败时，优先切回保留的 latest；只有没有可用基线或切回失败才交给安全模式。 */
+async function rollbackAlphaToLatest() {
+  const current = activeEngineSelection()
+  if (current?.channel !== 'alpha') return { attempted: false }
+  const stable = engineHistory().find((item) => item.channel === 'latest' && item.installed)
+  if (!stable) {
+    return { attempted: false, error: '没有可用的 latest 回退版本' }
+  }
+  const switched = await switchEngineVersion(stable.version)
+  if (switched.ok && (switched.switched || switched.alreadyCurrent)) {
+    appendEvent('engine-auto-rolled-back', `alpha 引擎启动连续失败，已自动回到 latest ${stable.version}。`, {
+      fromVersion: current.version, toVersion: stable.version, scope: 'engine',
+    })
+    return { ...switched, attempted: true, autoRolledBack: true, action: 'engine-auto-rolled-back' }
+  }
+  return { ...switched, attempted: true, autoRolledBack: false, action: 'engine-rollback-failed' }
+}
+
+async function recoverProductionFailure(reason, allowEngineRollback = true) {
+  if (allowEngineRollback && activeEngineSelection()?.channel === 'alpha') {
+    const rollback = await rollbackAlphaToLatest()
+    if (rollback.autoRolledBack) return rollback
+    return await startSafe(rollback.error ?? reason)
+  }
+  return await startSafe(reason)
 }
 
 /** 手动回退到首个已保留的旧引擎版本，并安全启动。 */
@@ -933,7 +981,7 @@ async function startSafe(reason) {
   return { ok: true, mode: 'safe', pid, reason, ...result }
 }
 
-async function startProduction({ alreadyChecked = false } = {}) {
+async function startProduction({ alreadyChecked = false, allowEngineRollback = true } = {}) {
   applyRuntimePatch()
   if (!alreadyChecked) {
     const checked = await preflight()
@@ -942,8 +990,12 @@ async function startProduction({ alreadyChecked = false } = {}) {
       if (existsSync(LKG)) {
         restoreLkg()
         const restored = await preflight()
-        if (!restored.ok) return await startSafe(`candidate and LKG invalid: ${restored.issues?.join('; ')}`)
-      } else return await startSafe(`candidate invalid and no LKG: ${checked.issues?.join('; ')}`)
+        if (!restored.ok) {
+          return await recoverProductionFailure(`candidate and LKG invalid: ${restored.issues?.join('; ')}`, allowEngineRollback)
+        }
+      } else {
+        return await recoverProductionFailure(`candidate invalid and no LKG: ${checked.issues?.join('; ')}`, allowEngineRollback)
+      }
     }
     if (checked.ok) snapshot()
   }
@@ -970,7 +1022,8 @@ async function startProduction({ alreadyChecked = false } = {}) {
         } catch {}
       }
     }
-    return await startSafe(`production failed: ${error.message ?? error}`)
+    await stopRunning()
+    return await recoverProductionFailure(`production failed: ${error.message ?? error}`, allowEngineRollback)
   }
 }
 
@@ -988,6 +1041,11 @@ async function watchdog() {
   if (!existsSync(ENABLED_FILE)) return { ok: true, action: 'disabled' }
   if (existsSync(MAINTENANCE_FILE)) return { ok: true, action: 'maintenance' }
   if (await isUp()) return { ok: true, action: 'healthy' }
+  if (activeEngineSelection()?.channel === 'alpha') {
+    const rollback = await rollbackAlphaToLatest()
+    if (rollback.autoRolledBack) return rollback
+    return await startSafe(rollback.error ?? 'alpha 引擎不可用，无法回退到 latest')
+  }
   const failures = (state().failures ?? []).filter((stamp) => Date.parse(stamp) > Date.now() - 10 * 60_000)
   if (failures.length >= 3) return await startSafe('crash-loop threshold reached')
   const result = await startProduction()
@@ -1005,10 +1063,12 @@ async function status() {
     const parsed = Number(found.split(/\s+/)[0])
     if (parsed > 1) pid = parsed
   }
+  const selectedEngine = activeEngineSelection()
   return {
     ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION,
     capabilities: CAPABILITIES, up, url: BASE, state: state(), lastKnownGood: existsSync(LKG),
-    engine: detectEngineVersion(), pid, integrations: guardianIntegrations(), live,
+    engine: selectedEngine?.version ?? detectEngineVersion(), engineChannel: selectedEngine?.channel ?? null,
+    pid, integrations: guardianIntegrations(), live,
     update: readJson(UPDATE_STATE_FILE),
     operation: readJson(OPERATION_STATE_FILE),
     previousVersion: previousEngine()?.toVersion ?? null,
@@ -1066,9 +1126,14 @@ async function main() {
       const index = process.argv.indexOf('--version')
       const version = index >= 0 ? process.argv[index + 1] : null
       if (!validEngineVersion(version)) return output({ ok: false, error: 'update requires --version <semver>' })
+      const channelIndex = process.argv.indexOf('--channel')
+      const channel = channelIndex >= 0 ? process.argv[channelIndex + 1] : null
+      if (channel !== null && !validReleaseChannel(channel)) {
+        return output({ ok: false, error: 'update requires --channel <latest|alpha>' })
+      }
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
-      return output(await updateEngine(version))
+      return output(await updateEngine(version, channel))
     }
     if (command === 'rollback') {
       writeFileSync(ENABLED_FILE, now() + '\n')

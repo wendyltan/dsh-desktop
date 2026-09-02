@@ -148,9 +148,29 @@ struct SettingsView: View {
             } header: {
                 Label("余额提醒", systemImage: "creditcard")
             }
+            Section {
+                Picker("更新通道", selection: Binding(
+                    get: { store.settings.engineUpdateChannel },
+                    set: { store.updateEngineChannel($0) }
+                )) {
+                    ForEach(EngineUpdateChannel.allCases) { channel in
+                        Text(channel.title).tag(channel)
+                    }
+                }
+                Text(store.settings.engineUpdateChannel.explanation)
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("切换通道后只重新检查，不会自动安装引擎。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("立即检查") { store.checkUpdate(force: true) }
+                }
+            } header: {
+                Label("引擎更新", systemImage: "arrow.down.circle")
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 550)
+        .frame(width: 500, height: 630)
         .onAppear {
             intervalMinutes = max(1, store.settings.balanceRefreshSeconds / 60)
             threshold = store.settings.balanceWarningThreshold
@@ -182,7 +202,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show(store: AppStore) {
         if window == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 550),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 630),
                 styleMask: [.titled, .closable],
                 backing: .buffered, defer: false
             )

@@ -28,6 +28,13 @@ struct UpdateCheckerTests {
         expect(!UpdateChecker.isNewer("1.0.0", than: "1.0.1-beta"), "core 1.0.0 < 1.0.1")
         expect(UpdateChecker.isNewer("1.0.0-rc.10", than: "1.0.0-rc.9"), "rc.10 > rc.9")
 
+        let npmPackument: [String: Any] = [
+            "dist-tags": ["latest": "0.1.1-rc.2", "alpha": "0.1.2-alpha.3"],
+        ]
+        expect(UpdateChecker.channelVersion(from: npmPackument, channel: .latest) == "0.1.1-rc.2", "latest channel tag")
+        expect(UpdateChecker.channelVersion(from: npmPackument, channel: .alpha) == "0.1.2-alpha.3", "alpha channel tag")
+        expect(UpdateChecker.isNewer("0.1.2-alpha.3", than: "0.1.1-rc.2"), "alpha channel version comparison")
+
         // Guardian engine.json 指向的 .bin/dsh 符号链接应解析到真实引擎包。
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("dsh-update-check-\(UUID().uuidString)")
