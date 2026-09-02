@@ -26,6 +26,21 @@ struct UpdateCheckerTests {
         expect(!UpdateChecker.isNewer("1.0.0-alpha", than: "1.0.0-beta"), "alpha < beta")
         expect(UpdateChecker.isNewer("1.0.1-beta", than: "1.0.0"), "core 1.0.1 > 1.0.0")
         expect(!UpdateChecker.isNewer("1.0.0", than: "1.0.1-beta"), "core 1.0.0 < 1.0.1")
+        expect(UpdateChecker.isNewer("1.0.0-rc.10", than: "1.0.0-rc.9"), "rc.10 > rc.9")
+
+        // Guardian engine.json 指向的 .bin/dsh 符号链接应解析到真实引擎包。
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("dsh-update-check-\(UUID().uuidString)")
+        let package = root.appendingPathComponent("node_modules/@deepseek-ai/dsh")
+        let executable = package.appendingPathComponent("lib/bin.js")
+        let bin = root.appendingPathComponent("node_modules/.bin/dsh")
+        try? fm.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: bin.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("{\"name\":\"@deepseek-ai/dsh\",\"version\":\"1.2.3\"}".utf8).write(to: package.appendingPathComponent("package.json"))
+        try? Data("#!/usr/bin/env node\n".utf8).write(to: executable)
+        try? fm.createSymbolicLink(at: bin, withDestinationURL: executable)
+        expect(UpdateChecker.engineVersion(at: bin) == "1.2.3", "resolve engine package through .bin symlink")
+        try? fm.removeItem(at: root)
 
         // shellQuote
         expect(shellQuote("a b") == "'a b'", "shellQuote spaces")

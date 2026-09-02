@@ -20,30 +20,48 @@ enum UpdateChecker {
         return nil
     }
 
-    /// Guardian 尚未安装或暂时不可用时，直接读取本机 dsh 包元数据，避免把兜底常量
-    /// 误报成真实运行版本。优先 profile 安装，其次使用最新的 npx 缓存。
+    /// Guardian 暂时不可用时，优先读取 engine.json 指向的活动引擎，
+    /// 并从该可执行文件所属的包元数据核验版本。只有没有引擎选择文件时，
+    /// 才兼容旧版 profile 安装；不从 npx 缓存猜测当前引擎。
     private static func detectLocalEngine() -> String? {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
-        var candidates = [home.appendingPathComponent(".dsh/profiles/web/node_modules/@deepseek-ai/dsh/package.json")]
-        let npxRoot = home.appendingPathComponent(".npm/_npx")
-        if let dirs = try? fm.contentsOfDirectory(at: npxRoot,
-                                                   includingPropertiesForKeys: [.contentModificationDateKey],
-                                                   options: [.skipsHiddenFiles]) {
-            candidates.append(contentsOf: dirs.sorted {
-                let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return left > right
-            }.map { $0.appendingPathComponent("node_modules/@deepseek-ai/dsh/package.json") })
-        }
-        for file in candidates {
-            guard let data = try? Data(contentsOf: file),
+        let engineState = URL(fileURLWithPath: GuardianService.engineStateFile)
+        if fm.fileExists(atPath: engineState.path) {
+            guard let data = try? Data(contentsOf: engineState),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  json["name"] as? String == "@deepseek-ai/dsh",
-                  let version = json["version"] as? String, !version.isEmpty else { continue }
-            return version
+                  let active = json["active"] as? String, !active.isEmpty else { return nil }
+            return engineVersion(at: URL(fileURLWithPath: active))
+        }
+
+        let profilePackage = home.appendingPathComponent(".dsh/profiles/web/node_modules/@deepseek-ai/dsh/package.json")
+        return packageVersion(at: profilePackage)
+    }
+
+    /// 从 dsh 可执行文件向上定位其所属的 @deepseek-ai/dsh 包。
+    /// 解析符号链接后再查找，覆盖 npm 的 node_modules/.bin/dsh 布局。
+    static func engineVersion(at executable: URL) -> String? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: executable.path) else { return nil }
+        var directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
+        for _ in 0..<12 {
+            if let version = packageVersion(at: directory.appendingPathComponent("package.json")) {
+                return version
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path { break }
+            directory = parent
         }
         return nil
+    }
+
+    private static func packageVersion(at file: URL) -> String? {
+        guard let data = try? Data(contentsOf: file),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["name"] as? String == "@deepseek-ai/dsh",
+              let version = json["version"] as? String,
+              isVersion(version) else { return nil }
+        return version
     }
 
     /// 查询 npm 最新版本，返回 (最新版本号, 错误信息)。失败时 latest 为 nil。

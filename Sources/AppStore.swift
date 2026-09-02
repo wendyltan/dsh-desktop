@@ -616,13 +616,13 @@ final class AppStore: NSObject, ObservableObject {
             let (latest, err) = UpdateChecker.checkEngine()
             DispatchQueue.main.async {
                 guard let installed else {
-                    self.updateInstallAvailable = false
-                    self.updateAvailable = false
+                    self.clearUpdateAvailability()
                     self.updateMessage = "检查更新失败：未能识别当前运行的 Harness 引擎版本。"
                     if force { self.showUpdateAlert = true }
                     return
                 }
                 guard let latest = latest, err == nil else {
+                    self.clearUpdateAvailability()
                     self.updateMessage = "检查更新失败：\(err ?? "网络错误")"
                     if force { self.showUpdateAlert = true }
                     return
@@ -640,6 +640,13 @@ final class AppStore: NSObject, ObservableObject {
                 if force { self.showUpdateAlert = true }
             }
         }
+    }
+
+    private func clearUpdateAvailability() {
+        updateInstallAvailable = false
+        updateAvailable = false
+        updateVersion = nil
+        refreshUpdateMenuItem()
     }
 
     /// 由桌面客户端委托 Guardian 完成引擎安装、预检、切换和安全重启。
