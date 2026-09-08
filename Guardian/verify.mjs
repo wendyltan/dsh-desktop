@@ -40,6 +40,44 @@ try {
   const boot = { rev: 'test', entries: [{ id: 'entry', url: '/entry.js' }] }
   assert.deepEqual(guardian.bootManifest(`<head><script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script></head>`), boot)
   assert.deepEqual(guardian.bootManifest(`<head><script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(boot)}<\\/script></head>`), boot)
+  const accessURL = guardian.webAccessURLFromText([
+    'dsh web: http://attacker.invalid/?token=wrong',
+    'dsh web: http://127.0.0.1:4567/?token=smoke-secret',
+  ].join('\n'), 'http://127.0.0.1:4567')
+  assert.equal(accessURL?.searchParams.get('token'), 'smoke-secret')
+  assert.equal(
+    guardian.redactWebTokens('dsh web: http://127.0.0.1:4567/?token=smoke-secret'),
+    'dsh web: http://127.0.0.1:4567/?token=[redacted]',
+  )
+
+  const originalFetch = globalThis.fetch
+  const fetched = []
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input)
+    fetched.push({ url, cookie: options.headers?.cookie ?? '' })
+    assert.equal(url.searchParams.get('token'), 'smoke-secret')
+    if (url.pathname === '/') {
+      return new Response(`<script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script>`, {
+        status: 200, headers: { 'set-cookie': 'dsh_access=accepted; HttpOnly; SameSite=Strict' },
+      })
+    }
+    assert.equal(options.headers?.cookie, 'dsh_access=accepted')
+    if (url.pathname === '/entry.js') return new Response('window.__ModuleLoader__.load({})')
+    if (url.pathname === '/test/status') {
+      return new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } })
+    }
+    return new Response('not found', { status: 404 })
+  }
+  try {
+    const authenticated = await guardian.health('http://127.0.0.1:4567', {
+      accessURL,
+      healthPaths: ['/test/status'],
+    })
+    assert.equal(authenticated.bootRev, 'test')
+    assert.deepEqual(fetched.map((item) => item.url.pathname), ['/', '/entry.js', '/test/status'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
   const integrations = guardian.guardianIntegrations()
   assert.equal(integrations.length, 1)
   assert.equal(integrations[0].id, 'test-integration')

@@ -661,13 +661,56 @@ function bootManifest(html) {
   throw new Error('boot manifest missing')
 }
 
-async function health(base, { healthPaths = [], checkBundles = true } = {}) {
-  const root = await fetch(`${base}/`, { signal: AbortSignal.timeout(8_000) })
+function webAccessURLFromText(text, base) {
+  const origin = new URL(base).origin
+  const matches = String(text).matchAll(/dsh web:\s+(https?:\/\/[^\s]+)/g)
+  let access = null
+  for (const match of matches) {
+    try {
+      const candidate = new URL(match[1])
+      if (candidate.origin === origin && candidate.searchParams.get('token')) access = candidate
+    } catch { /* ignore incomplete log lines */ }
+  }
+  return access
+}
+
+function webAccessURLFromLog(base, path = LOG_FILE, offset = 0) {
+  try { return webAccessURLFromText(readFileSync(path, 'utf8').slice(offset), base) } catch { return null }
+}
+
+function authenticatedURL(path, base, accessURL) {
+  const url = new URL(path, base)
+  if (url.origin !== new URL(base).origin) throw new Error('authenticated web request must stay same-origin')
+  if (accessURL?.searchParams.get('token') && !url.searchParams.has('token')) {
+    url.searchParams.set('token', accessURL.searchParams.get('token'))
+  }
+  return url
+}
+
+function responseCookies(response) {
+  const values = typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie() : [response.headers.get('set-cookie')].filter(Boolean)
+  return values.map((value) => value.split(';', 1)[0]).filter(Boolean).join('; ')
+}
+
+function redactWebTokens(text) {
+  return String(text).replace(/([?&]token=)[^\s&#]+/g, '$1[redacted]')
+}
+
+async function health(base, { healthPaths = [], checkBundles = true, accessURL = null } = {}) {
+  const baseURL = new URL(base)
+  if (accessURL !== null && accessURL.origin !== baseURL.origin) throw new Error('web access URL must stay same-origin')
+  const rootURL = accessURL ?? new URL('/', baseURL)
+  const root = await fetch(rootURL, { signal: AbortSignal.timeout(8_000) })
   if (!root.ok) throw new Error(`root HTTP ${root.status}`)
+  const cookie = responseCookies(root)
+  const headers = cookie ? { cookie } : {}
   const boot = bootManifest(await root.text())
   if (checkBundles) {
     for (const entry of boot.entries) {
-      const response = await fetch(new URL(entry.url, base), { signal: AbortSignal.timeout(10_000) })
+      const response = await fetch(authenticatedURL(entry.url, baseURL, accessURL), {
+        headers, signal: AbortSignal.timeout(10_000),
+      })
       if (!response.ok) throw new Error(`${entry.id} HTTP ${response.status}`)
       const body = await response.text()
       if (!body.includes('window.__ModuleLoader__.load')) throw new Error(`${entry.id} registration missing`)
@@ -676,7 +719,9 @@ async function health(base, { healthPaths = [], checkBundles = true } = {}) {
   for (const path of healthPaths) {
     const url = new URL(path, base)
     if (url.origin !== new URL(base).origin) throw new Error(`integration health must stay same-origin: ${path}`)
-    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) })
+    const response = await fetch(authenticatedURL(url, baseURL, accessURL), {
+      headers, signal: AbortSignal.timeout(5_000),
+    })
     let body = null
     try { body = await response.json() } catch {}
     if (!response.ok || body?.ok !== true) throw new Error(`integration health failed: ${path}`)
@@ -708,15 +753,17 @@ async function preflight({ smoke = true } = {}) {
     let lastError = 'not ready'
     while (Date.now() < deadline && child.exitCode === null) {
       try {
+        const accessURL = webAccessURLFromLog(`http://127.0.0.1:${port}`, smokeOut, outOffset)
         const result = await health(`http://127.0.0.1:${port}`, {
           healthPaths: basic.integrations.map((item) => item.healthPath).filter(Boolean),
+          accessURL,
         })
         return { ok: true, stage: 'smoke', port, ...result, bundles: basic.bundles }
       } catch (error) { lastError = String(error.message ?? error) }
       await new Promise((accept) => setTimeout(accept, 500))
     }
     const readTail = (path, offset) => {
-      try { return readFileSync(path, 'utf8').slice(offset).trim().slice(-2_000) } catch { return '' }
+      try { return redactWebTokens(readFileSync(path, 'utf8').slice(offset).trim().slice(-2_000)) } catch { return '' }
     }
     const detail = readTail(smokeErr, errOffset) || readTail(smokeOut, outOffset)
     return {
@@ -919,7 +966,7 @@ async function isUp() {
   try {
     const healthPaths = state().mode === 'safe' ? []
       : guardianIntegrations().map((item) => item.healthPath).filter(Boolean)
-    await health(BASE, { healthPaths, checkBundles: false })
+    await health(BASE, { healthPaths, checkBundles: false, accessURL: webAccessURLFromLog(BASE) })
     return true
   } catch { return false }
 }
@@ -938,6 +985,7 @@ async function stopRunning() {
 }
 
 function spawnProfile(profileName) {
+  const logOffset = existsSync(LOG_FILE) ? statSync(LOG_FILE).size : 0
   const out = openSync(LOG_FILE, 'a')
   const child = spawn(process.execPath, [dshEntry(), '--profile', profileName, '--no-open', '--host', HOST, '--port', String(PORT)], {
     detached: true, env: process.env, stdio: ['ignore', out, out],
@@ -945,7 +993,7 @@ function spawnProfile(profileName) {
   closeSync(out)
   child.unref()
   writeFileSync(PID_FILE, String(child.pid) + '\n')
-  return child.pid
+  return { pid: child.pid, logOffset }
 }
 
 function recordFailure(message) {
@@ -956,14 +1004,14 @@ function recordFailure(message) {
   return failures.length
 }
 
-async function waitHealthy(profileName) {
+async function waitHealthy(profileName, logOffset = 0) {
   const deadline = Date.now() + 35_000
   let lastError = 'not ready'
   while (Date.now() < deadline) {
     try {
       const healthPaths = profileName === 'web'
         ? guardianIntegrations().map((item) => item.healthPath).filter(Boolean) : []
-      return await health(BASE, { healthPaths })
+      return await health(BASE, { healthPaths, accessURL: webAccessURLFromLog(BASE, LOG_FILE, logOffset) })
     } catch (error) { lastError = String(error.message ?? error) }
     await new Promise((accept) => setTimeout(accept, 500))
   }
@@ -973,8 +1021,8 @@ async function waitHealthy(profileName) {
 async function startSafe(reason) {
   ensureSafeProfile()
   await stopRunning()
-  const pid = spawnProfile('safe')
-  const result = await waitHealthy('safe')
+  const { pid, logOffset } = spawnProfile('safe')
+  const result = await waitHealthy('safe', logOffset)
   updateState({ mode: 'safe', pid, failures: [], lastSuccess: now(), lastError: reason })
   appendEvent('safe', 'Harness 已进入受限运行模式，保持基础可用。', { scope: 'service' })
   log(`safe mode started: ${reason}`)
@@ -1000,9 +1048,9 @@ async function startProduction({ alreadyChecked = false, allowEngineRollback = t
     if (checked.ok) snapshot()
   }
   await stopRunning()
-  const pid = spawnProfile('web')
+  const { pid, logOffset } = spawnProfile('web')
   try {
-    const result = await waitHealthy('web')
+    const result = await waitHealthy('web', logOffset)
     updateState({ mode: 'production', pid, failures: [], lastSuccess: now(), lastError: null })
     return { ok: true, mode: 'production', pid, ...result }
   } catch (error) {
@@ -1013,9 +1061,9 @@ async function startProduction({ alreadyChecked = false, allowEngineRollback = t
       restoreLkg()
       const restored = await preflight()
       if (restored.ok) {
-        const retryPid = spawnProfile('web')
+        const { pid: retryPid, logOffset: retryLogOffset } = spawnProfile('web')
         try {
-          const result = await waitHealthy('web')
+          const result = await waitHealthy('web', retryLogOffset)
           updateState({ mode: 'recovered', pid: retryPid, failures: [], lastSuccess: now(), lastError: null })
           appendEvent('recovered', 'Harness 服务已自动恢复。', { scope: 'service' })
           return { ok: true, mode: 'recovered', pid: retryPid, ...result }
@@ -1056,7 +1104,7 @@ async function watchdog() {
 async function status() {
   let up = false
   let live = null
-  try { live = await health(BASE, { checkBundles: false }); up = true } catch {}
+  try { live = await health(BASE, { checkBundles: false, accessURL: webAccessURLFromLog(BASE) }); up = true } catch {}
   let pid = null
   if (up) {
     const found = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim()
@@ -1197,5 +1245,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 export {
   appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
-  pruneEngineEntries, restoreLkg, snapshot, switchEngineVersion, validateProfileFiles,
+  health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, switchEngineVersion, validateProfileFiles,
+  webAccessURLFromText,
 }
