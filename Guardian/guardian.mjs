@@ -31,6 +31,7 @@ const EVENTS_FILE = join(ROOT, 'events.log')
 const HOST = process.env.DSH_WEB_HOST ?? '127.0.0.1'
 const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 const BASE = `http://${HOST}:${PORT}`
+const STARTUP_TIMEOUT_MS = 120_000
 const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
 const GUARDIAN_VERSION = '0.4.0'
@@ -561,7 +562,13 @@ function makeScratch(profile = PROFILE) {
   if (existsSync(credentials)) copyFileSync(credentials, join(scratch, '.credentials.yaml'))
   const modules = join(profile, 'node_modules')
   if (!existsSync(modules)) throw new Error(`profile node_modules missing: ${modules}`)
-  symlinkSync(modules, join(scratchProfile, 'node_modules'), 'dir')
+  // A directory symlink leaks Node's realpath-based peer resolution back into
+  // the live profile, whose shared fallback still belongs to the old engine.
+  // Copy the installed tree so candidate plugins resolve peers through the
+  // scratch home's fallback generation instead.
+  cpSync(modules, join(scratchProfile, 'node_modules'), { recursive: true })
+  const deployments = join(DSH_HOME, 'deployments')
+  if (existsSync(deployments)) symlinkSync(deployments, join(scratch, 'deployments'), 'dir')
   return { scratch, scratchProfile }
 }
 
@@ -666,21 +673,30 @@ function bootManifest(html) {
   throw new Error('boot manifest missing')
 }
 
-function webAccessURLFromText(text, base) {
+function webAccessURLsFromText(text, base) {
   const origin = new URL(base).origin
   const matches = String(text).matchAll(/dsh web:\s+(https?:\/\/[^\s]+)/g)
-  let access = null
+  const access = []
   for (const match of matches) {
     try {
       const candidate = new URL(match[1])
-      if (candidate.origin === origin && candidate.searchParams.get('token')) access = candidate
+      if (candidate.origin === origin && candidate.searchParams.get('token')) access.push(candidate)
     } catch { /* ignore incomplete log lines */ }
   }
-  return access
+  return [...new Map(access.map((item) => [item.href, item])).values()].reverse().slice(0, 8)
+}
+
+function webAccessURLFromText(text, base) {
+  return webAccessURLsFromText(text, base)[0] ?? null
+}
+
+function logTextFromByteOffset(path, offset = 0) {
+  const bytes = readFileSync(path)
+  return bytes.subarray(Math.min(offset, bytes.length)).toString('utf8')
 }
 
 function webAccessURLFromLog(base, path = LOG_FILE, offset = 0) {
-  try { return webAccessURLFromText(readFileSync(path, 'utf8').slice(offset), base) } catch { return null }
+  try { return webAccessURLFromText(logTextFromByteOffset(path, offset), base) } catch { return null }
 }
 
 function webAccessURLFromLogs(base, logs) {
@@ -690,6 +706,17 @@ function webAccessURLFromLogs(base, logs) {
     if (candidate) access = candidate
   }
   return access
+}
+
+async function healthFromLog(base, options = {}, path = LOG_FILE, offset = 0) {
+  let text = ''
+  try { text = logTextFromByteOffset(path, offset) } catch {}
+  const candidates = webAccessURLsFromText(text, base)
+  let lastError = null
+  for (const accessURL of candidates.length > 0 ? candidates : [null]) {
+    try { return await health(base, { ...options, accessURL }) } catch (error) { lastError = error }
+  }
+  throw lastError ?? new Error('health check failed')
 }
 
 function sameOriginURL(path, base) {
@@ -709,7 +736,7 @@ function redactWebTokens(text) {
 }
 
 function logTail(path, offset = 0, limit = 2_000) {
-  try { return redactWebTokens(readFileSync(path, 'utf8').slice(offset).trim().slice(-limit)) } catch { return '' }
+  try { return redactWebTokens(logTextFromByteOffset(path, offset).trim().slice(-limit)) } catch { return '' }
 }
 
 async function health(base, { healthPaths = [], checkBundles = true, accessURL = null } = {}) {
@@ -784,7 +811,7 @@ async function preflight({ smoke = true } = {}) {
   closeSync(out)
   closeSync(err)
   try {
-    const deadline = Date.now() + 75_000
+    const deadline = Date.now() + STARTUP_TIMEOUT_MS
     let lastError = 'not ready'
     let healthySince = null
     let healthyResult = null
@@ -1011,7 +1038,7 @@ async function isUp() {
   try {
     const healthPaths = state().mode === 'safe' ? []
       : guardianIntegrations().map((item) => item.healthPath).filter(Boolean)
-    await health(BASE, { healthPaths, checkBundles: false, accessURL: webAccessURLFromLog(BASE) })
+    await healthFromLog(BASE, { healthPaths, checkBundles: false })
     return true
   } catch { return false }
 }
@@ -1050,13 +1077,15 @@ function recordFailure(message) {
 }
 
 async function waitHealthy(profileName, logOffset = 0) {
-  const deadline = Date.now() + 35_000
+  // Production must allow the same plugin-heavy startup window as preflight;
+  // the authenticated URL may not be emitted until composition completes.
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS
   let lastError = 'not ready'
   while (Date.now() < deadline) {
     try {
       const healthPaths = profileName === 'web'
         ? guardianIntegrations().map((item) => item.healthPath).filter(Boolean) : []
-      return await health(BASE, { healthPaths, accessURL: webAccessURLFromLog(BASE, LOG_FILE, logOffset) })
+      return await healthFromLog(BASE, { healthPaths }, LOG_FILE, logOffset)
     } catch (error) { lastError = String(error.message ?? error) }
     await new Promise((accept) => setTimeout(accept, 500))
   }
@@ -1149,7 +1178,7 @@ async function watchdog() {
 async function status() {
   let up = false
   let live = null
-  try { live = await health(BASE, { checkBundles: false, accessURL: webAccessURLFromLog(BASE) }); up = true } catch {}
+  try { live = await healthFromLog(BASE, { checkBundles: false }); up = true } catch {}
   let pid = null
   if (up) {
     const found = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim()
@@ -1292,5 +1321,5 @@ export {
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
   health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
   switchEngineVersion, validateProfileFiles,
-  webAccessURLFromLogs, webAccessURLFromText,
+  logTextFromByteOffset, makeScratch, webAccessURLFromLogs, webAccessURLFromText, webAccessURLsFromText,
 }

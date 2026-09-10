@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+  appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync,
+  symlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -45,6 +46,14 @@ try {
     'dsh web: http://127.0.0.1:4567/?token=smoke-secret',
   ].join('\n'), 'http://127.0.0.1:4567')
   assert.equal(accessURL?.searchParams.get('token'), 'smoke-secret')
+  assert.deepEqual(
+    guardian.webAccessURLsFromText([
+      'dsh web: http://127.0.0.1:4567/?token=older-secret',
+      'dsh web: http://127.0.0.1:4567/?token=newer-secret',
+      'dsh web: http://127.0.0.1:4567/?token=older-secret',
+    ].join('\n'), 'http://127.0.0.1:4567').map((item) => item.searchParams.get('token')),
+    ['newer-secret', 'older-secret'],
+  )
   const stderrLog = join(root, 'stderr.log')
   writeFileSync(stderrLog, 'dsh web: http://127.0.0.1:4567/?token=stderr-secret\n')
   assert.equal(
@@ -57,6 +66,16 @@ try {
   assert.equal(
     guardian.redactWebTokens('dsh web: http://127.0.0.1:4567/?token=smoke-secret'),
     'dsh web: http://127.0.0.1:4567/?token=[redacted]',
+  )
+  const unicodeLog = join(root, 'unicode.log')
+  writeFileSync(unicodeLog, '旧引擎日志\n')
+  const unicodeOffset = statSync(unicodeLog).size
+  appendFileSync(unicodeLog, 'dsh web: http://127.0.0.1:4567/?token=fresh-secret\n')
+  assert.equal(guardian.logTextFromByteOffset(unicodeLog, unicodeOffset).startsWith('dsh web:'), true)
+  assert.equal(
+    guardian.webAccessURLFromLogs('http://127.0.0.1:4567', [{ path: unicodeLog, offset: unicodeOffset }])
+      ?.searchParams.get('token'),
+    'fresh-secret',
   )
 
   const originalFetch = globalThis.fetch
@@ -100,6 +119,12 @@ try {
   assert.equal(integrations[0].id, 'test-integration')
   assert.equal(integrations[0].healthPath, '/test/status')
   assert.equal(guardian.validateProfileFiles().ok, true)
+  mkdirSync(join(root, 'deployments'), { recursive: true })
+  const scratch = guardian.makeScratch()
+  assert.equal(lstatSync(join(scratch.scratchProfile, 'node_modules')).isSymbolicLink(), false)
+  assert.equal(existsSync(join(scratch.scratchProfile, 'node_modules', 'test-integration', 'marker.txt')), true)
+  assert.equal(lstatSync(join(scratch.scratch, 'deployments')).isSymbolicLink(), true)
+  rmSync(scratch.scratch, { recursive: true, force: true })
 
   guardian.snapshot()
   assert.equal(existsSync(join(root, 'guardian', 'last-known-good', 'integrations')), true)
