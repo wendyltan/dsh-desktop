@@ -284,6 +284,10 @@ function pruneEngineEntries(entries, keep = MAX_RETAINED_ENGINES) {
   return { retained, dropped }
 }
 
+function successfulEngineRestore(result, expectedVersion, actualVersion) {
+  return result?.ok === true && result.mode !== 'safe' && actualVersion === expectedVersion
+}
+
 function removeManagedEngine(entry) {
   const directory = managedEngineDirectory(entry?.active)
   if (directory) rmSync(directory, { recursive: true, force: true })
@@ -428,13 +432,14 @@ async function updateEngine(version, channel = null) {
   let rollback = null
   let rollbackError = null
   try { rollback = await startProduction() } catch (error) { rollbackError = String(error?.message ?? error) }
-  const rollbackMessage = rollback?.ok === true
+  const rollbackRestored = successfulEngineRestore(rollback, current, detectEngineVersion())
+  const rollbackMessage = rollbackRestored
     ? '新引擎启动未通过，已恢复旧引擎'
-    : `新引擎启动未通过，旧引擎恢复失败：${rollbackError ?? '服务未能启动'}`
+    : `新引擎启动未通过，旧引擎未恢复到正常模式：${rollbackError ?? rollback?.reason ?? rollback?.error ?? '服务未能启动'}`
   updateProgress({ phase: 'rolled-back', percent: 0, version, message: rollbackMessage })
   appendEvent('rolled-back', `更新到 ${version} 未通过启动，已回到 ${current}。`, { fromVersion: current, toVersion: version, scope: 'engine' })
   return {
-    ok: false, updated: false, rolledBack: rollback?.ok === true,
+    ok: false, updated: false, rolledBack: rollbackRestored,
     fromVersion: current, toVersion: version, restart: restarted, rollback, rollbackError,
     error: rollbackMessage,
   }
@@ -703,6 +708,10 @@ function redactWebTokens(text) {
   return String(text).replace(/([?&]token=)[^\s&#]+/g, '$1[redacted]')
 }
 
+function logTail(path, offset = 0, limit = 2_000) {
+  try { return redactWebTokens(readFileSync(path, 'utf8').slice(offset).trim().slice(-limit)) } catch { return '' }
+}
+
 async function health(base, { healthPaths = [], checkBundles = true, accessURL = null } = {}) {
   const baseURL = new URL(base)
   if (accessURL !== null && accessURL.origin !== baseURL.origin) throw new Error('web access URL must stay same-origin')
@@ -777,6 +786,8 @@ async function preflight({ smoke = true } = {}) {
   try {
     const deadline = Date.now() + 75_000
     let lastError = 'not ready'
+    let healthySince = null
+    let healthyResult = null
     while (Date.now() < deadline && child.exitCode === null) {
       try {
         const accessURL = webAccessURLFromLogs(`http://127.0.0.1:${port}`, [
@@ -787,14 +798,19 @@ async function preflight({ smoke = true } = {}) {
           healthPaths: basic.integrations.map((item) => item.healthPath).filter(Boolean),
           accessURL,
         })
-        return { ok: true, stage: 'smoke', port, ...result, bundles: basic.bundles }
-      } catch (error) { lastError = String(error.message ?? error) }
+        healthySince ??= Date.now()
+        healthyResult = result
+        if (Date.now() - healthySince >= 2_000) {
+          return { ok: true, stage: 'smoke', port, ...healthyResult, bundles: basic.bundles }
+        }
+      } catch (error) {
+        healthySince = null
+        healthyResult = null
+        lastError = String(error.message ?? error)
+      }
       await new Promise((accept) => setTimeout(accept, 500))
     }
-    const readTail = (path, offset) => {
-      try { return redactWebTokens(readFileSync(path, 'utf8').slice(offset).trim().slice(-2_000)) } catch { return '' }
-    }
-    const detail = readTail(smokeErr, errOffset) || readTail(smokeOut, outOffset)
+    const detail = logTail(smokeErr, errOffset) || logTail(smokeOut, outOffset)
     return {
       ok: false, stage: 'smoke',
       issues: [lastError, detail, `exit=${child.exitCode ?? 'running'}`].filter(Boolean),
@@ -1274,6 +1290,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 export {
   appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
-  health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, switchEngineVersion, validateProfileFiles,
+  health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
+  switchEngineVersion, validateProfileFiles,
   webAccessURLFromLogs, webAccessURLFromText,
 }
