@@ -678,6 +678,15 @@ function webAccessURLFromLog(base, path = LOG_FILE, offset = 0) {
   try { return webAccessURLFromText(readFileSync(path, 'utf8').slice(offset), base) } catch { return null }
 }
 
+function webAccessURLFromLogs(base, logs) {
+  let access = null
+  for (const { path, offset = 0 } of logs) {
+    const candidate = webAccessURLFromLog(base, path, offset)
+    if (candidate) access = candidate
+  }
+  return access
+}
+
 function authenticatedURL(path, base, accessURL) {
   const url = new URL(path, base)
   if (url.origin !== new URL(base).origin) throw new Error('authenticated web request must stay same-origin')
@@ -753,7 +762,10 @@ async function preflight({ smoke = true } = {}) {
     let lastError = 'not ready'
     while (Date.now() < deadline && child.exitCode === null) {
       try {
-        const accessURL = webAccessURLFromLog(`http://127.0.0.1:${port}`, smokeOut, outOffset)
+        const accessURL = webAccessURLFromLogs(`http://127.0.0.1:${port}`, [
+          { path: smokeOut, offset: outOffset },
+          { path: smokeErr, offset: errOffset },
+        ])
         const result = await health(`http://127.0.0.1:${port}`, {
           healthPaths: basic.integrations.map((item) => item.healthPath).filter(Boolean),
           accessURL,
@@ -1246,5 +1258,5 @@ export {
   appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
   health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, switchEngineVersion, validateProfileFiles,
-  webAccessURLFromText,
+  webAccessURLFromLogs, webAccessURLFromText,
 }

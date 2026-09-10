@@ -45,6 +45,15 @@ try {
     'dsh web: http://127.0.0.1:4567/?token=smoke-secret',
   ].join('\n'), 'http://127.0.0.1:4567')
   assert.equal(accessURL?.searchParams.get('token'), 'smoke-secret')
+  const stderrLog = join(root, 'stderr.log')
+  writeFileSync(stderrLog, 'dsh web: http://127.0.0.1:4567/?token=stderr-secret\n')
+  assert.equal(
+    guardian.webAccessURLFromLogs('http://127.0.0.1:4567', [
+      { path: join(root, 'stdout.log'), offset: 0 },
+      { path: stderrLog, offset: 0 },
+    ])?.searchParams.get('token'),
+    'stderr-secret',
+  )
   assert.equal(
     guardian.redactWebTokens('dsh web: http://127.0.0.1:4567/?token=smoke-secret'),
     'dsh web: http://127.0.0.1:4567/?token=[redacted]',
