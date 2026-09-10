@@ -64,13 +64,21 @@ try {
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(input)
     fetched.push({ url, cookie: options.headers?.cookie ?? '' })
-    assert.equal(url.searchParams.get('token'), 'smoke-secret')
-    if (url.pathname === '/') {
-      return new Response(`<script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script>`, {
-        status: 200, headers: { 'set-cookie': 'dsh_access=accepted; HttpOnly; SameSite=Strict' },
+    if (url.searchParams.get('token') === 'smoke-secret') {
+      assert.equal(options.redirect, 'manual')
+      return new Response(null, {
+        status: 303,
+        headers: {
+          location: '/',
+          'set-cookie': 'dsh_access=accepted; HttpOnly; SameSite=Strict',
+        },
       })
     }
     assert.equal(options.headers?.cookie, 'dsh_access=accepted')
+    assert.equal(url.search, '')
+    if (url.pathname === '/') {
+      return new Response(`<script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script>`)
+    }
     if (url.pathname === '/entry.js') return new Response('window.__ModuleLoader__.load({})')
     if (url.pathname === '/test/status') {
       return new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } })
@@ -83,7 +91,7 @@ try {
       healthPaths: ['/test/status'],
     })
     assert.equal(authenticated.bootRev, 'test')
-    assert.deepEqual(fetched.map((item) => item.url.pathname), ['/', '/entry.js', '/test/status'])
+    assert.deepEqual(fetched.map((item) => item.url.pathname), ['/', '/', '/entry.js', '/test/status'])
   } finally {
     globalThis.fetch = originalFetch
   }

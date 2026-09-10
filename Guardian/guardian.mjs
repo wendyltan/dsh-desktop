@@ -687,12 +687,9 @@ function webAccessURLFromLogs(base, logs) {
   return access
 }
 
-function authenticatedURL(path, base, accessURL) {
+function sameOriginURL(path, base) {
   const url = new URL(path, base)
   if (url.origin !== new URL(base).origin) throw new Error('authenticated web request must stay same-origin')
-  if (accessURL?.searchParams.get('token') && !url.searchParams.has('token')) {
-    url.searchParams.set('token', accessURL.searchParams.get('token'))
-  }
   return url
 }
 
@@ -709,15 +706,35 @@ function redactWebTokens(text) {
 async function health(base, { healthPaths = [], checkBundles = true, accessURL = null } = {}) {
   const baseURL = new URL(base)
   if (accessURL !== null && accessURL.origin !== baseURL.origin) throw new Error('web access URL must stay same-origin')
-  const rootURL = accessURL ?? new URL('/', baseURL)
-  const root = await fetch(rootURL, { signal: AbortSignal.timeout(8_000) })
+  let cookie = ''
+  let root
+  if (accessURL === null) {
+    root = await fetch(new URL('/', baseURL), { signal: AbortSignal.timeout(8_000) })
+  } else {
+    const exchange = await fetch(accessURL, {
+      redirect: 'manual', signal: AbortSignal.timeout(8_000),
+    })
+    if (exchange.status === 303) {
+      cookie = responseCookies(exchange)
+      if (!cookie) throw new Error('web authentication redirect did not set a cookie')
+      const location = exchange.headers.get('location')
+      if (!location) throw new Error('web authentication redirect missing location')
+      const cleanRoot = sameOriginURL(location, baseURL)
+      root = await fetch(cleanRoot, {
+        headers: { cookie }, redirect: 'error', signal: AbortSignal.timeout(8_000),
+      })
+    } else {
+      root = exchange
+      cookie = responseCookies(exchange)
+    }
+  }
   if (!root.ok) throw new Error(`root HTTP ${root.status}`)
-  const cookie = responseCookies(root)
+  if (!cookie) cookie = responseCookies(root)
   const headers = cookie ? { cookie } : {}
   const boot = bootManifest(await root.text())
   if (checkBundles) {
     for (const entry of boot.entries) {
-      const response = await fetch(authenticatedURL(entry.url, baseURL, accessURL), {
+      const response = await fetch(sameOriginURL(entry.url, baseURL), {
         headers, signal: AbortSignal.timeout(10_000),
       })
       if (!response.ok) throw new Error(`${entry.id} HTTP ${response.status}`)
@@ -728,7 +745,7 @@ async function health(base, { healthPaths = [], checkBundles = true, accessURL =
   for (const path of healthPaths) {
     const url = new URL(path, base)
     if (url.origin !== new URL(base).origin) throw new Error(`integration health must stay same-origin: ${path}`)
-    const response = await fetch(authenticatedURL(url, baseURL, accessURL), {
+    const response = await fetch(sameOriginURL(url, baseURL), {
       headers, signal: AbortSignal.timeout(5_000),
     })
     let body = null
