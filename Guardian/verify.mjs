@@ -67,6 +67,17 @@ try {
     guardian.redactWebTokens('dsh web: http://127.0.0.1:4567/?token=smoke-secret'),
     'dsh web: http://127.0.0.1:4567/?token=[redacted]',
   )
+  const handoffFile = join(root, 'guardian', 'web-access-url')
+  guardian.recordWebAccessURL(accessURL, 'http://127.0.0.1:4567', handoffFile)
+  assert.equal(existsSync(handoffFile), true)
+  assert.equal(statSync(handoffFile).mode & 0o777, 0o600)
+  assert.equal(readFileSync(handoffFile, 'utf8').trim(), accessURL.href)
+  assert.throws(
+    () => guardian.recordWebAccessURL('http://attacker.invalid/?token=wrong', 'http://127.0.0.1:4567', handoffFile),
+    /same-origin/,
+  )
+  guardian.recordWebAccessURL(null, 'http://127.0.0.1:4567', handoffFile)
+  assert.equal(existsSync(handoffFile), false)
   const unicodeLog = join(root, 'unicode.log')
   writeFileSync(unicodeLog, '旧引擎日志\n')
   const unicodeOffset = statSync(unicodeLog).size

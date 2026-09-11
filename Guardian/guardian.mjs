@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync,
+  chmodSync, closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync,
   lstatSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync,
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
@@ -28,6 +28,7 @@ const GUARDIAN_LOG = join(LOG_DIR, 'dsh-guardian.log')
 const UPDATE_STATE_FILE = join(ROOT, 'update.json')
 const OPERATION_STATE_FILE = join(ROOT, 'operation.json')
 const EVENTS_FILE = join(ROOT, 'events.log')
+const WEB_ACCESS_URL_FILE = join(ROOT, 'web-access-url')
 const HOST = process.env.DSH_WEB_HOST ?? '127.0.0.1'
 const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 const BASE = `http://${HOST}:${PORT}`
@@ -79,6 +80,24 @@ function writeJsonAtomic(file, value) {
   const temp = `${file}.new`
   writeFileSync(temp, JSON.stringify(value, null, 2) + '\n')
   renameSync(temp, file)
+}
+
+function recordWebAccessURL(accessURL, base = BASE, file = WEB_ACCESS_URL_FILE) {
+  if (accessURL === null) {
+    rmSync(file, { force: true })
+    return null
+  }
+  const candidate = accessURL instanceof URL ? accessURL : new URL(accessURL)
+  const expected = new URL(base)
+  if (candidate.origin !== expected.origin || candidate.username || candidate.password
+      || !candidate.searchParams.get('token')) {
+    throw new Error('web access URL must be a tokenized same-origin URL')
+  }
+  const temp = `${file}.new`
+  writeFileSync(temp, candidate.href + '\n', { mode: 0o600 })
+  chmodSync(temp, 0o600)
+  renameSync(temp, file)
+  return candidate
 }
 function state() {
   return readJson(STATE_FILE, { mode: 'unknown', failures: [], lastSuccess: null, lastError: null })
@@ -709,12 +728,17 @@ function webAccessURLFromLogs(base, logs) {
 }
 
 async function healthFromLog(base, options = {}, path = LOG_FILE, offset = 0) {
+  const { recordAccess = false, ...healthOptions } = options
   let text = ''
   try { text = logTextFromByteOffset(path, offset) } catch {}
   const candidates = webAccessURLsFromText(text, base)
   let lastError = null
   for (const accessURL of candidates.length > 0 ? candidates : [null]) {
-    try { return await health(base, { ...options, accessURL }) } catch (error) { lastError = error }
+    try {
+      const result = await health(base, { ...healthOptions, accessURL })
+      if (recordAccess) recordWebAccessURL(accessURL, base)
+      return result
+    } catch (error) { lastError = error }
   }
   throw lastError ?? new Error('health check failed')
 }
@@ -1038,7 +1062,7 @@ async function isUp() {
   try {
     const healthPaths = state().mode === 'safe' ? []
       : guardianIntegrations().map((item) => item.healthPath).filter(Boolean)
-    await healthFromLog(BASE, { healthPaths, checkBundles: false })
+    await healthFromLog(BASE, { healthPaths, checkBundles: false, recordAccess: true })
     return true
   } catch { return false }
 }
@@ -1057,6 +1081,7 @@ async function stopRunning() {
 }
 
 function spawnProfile(profileName) {
+  rmSync(WEB_ACCESS_URL_FILE, { force: true })
   const logOffset = existsSync(LOG_FILE) ? statSync(LOG_FILE).size : 0
   const out = openSync(LOG_FILE, 'a')
   const child = spawn(process.execPath, [dshEntry(), '--profile', profileName, '--no-open', '--host', HOST, '--port', String(PORT)], {
@@ -1085,7 +1110,7 @@ async function waitHealthy(profileName, logOffset = 0) {
     try {
       const healthPaths = profileName === 'web'
         ? guardianIntegrations().map((item) => item.healthPath).filter(Boolean) : []
-      return await healthFromLog(BASE, { healthPaths }, LOG_FILE, logOffset)
+      return await healthFromLog(BASE, { healthPaths, recordAccess: true }, LOG_FILE, logOffset)
     } catch (error) { lastError = String(error.message ?? error) }
     await new Promise((accept) => setTimeout(accept, 500))
   }
@@ -1178,7 +1203,7 @@ async function watchdog() {
 async function status() {
   let up = false
   let live = null
-  try { live = await healthFromLog(BASE, { checkBundles: false }); up = true } catch {}
+  try { live = await healthFromLog(BASE, { checkBundles: false, recordAccess: true }); up = true } catch {}
   let pid = null
   if (up) {
     const found = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim()
@@ -1321,5 +1346,6 @@ export {
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
   health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
   switchEngineVersion, validateProfileFiles,
-  logTextFromByteOffset, makeScratch, webAccessURLFromLogs, webAccessURLFromText, webAccessURLsFromText,
+  logTextFromByteOffset, makeScratch, recordWebAccessURL,
+  webAccessURLFromLogs, webAccessURLFromText, webAccessURLsFromText,
 }

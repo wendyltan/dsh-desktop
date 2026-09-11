@@ -24,17 +24,21 @@ struct WebView: NSViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.load(URLRequest(url: url))
         context.coordinator.lastReloadToken = reloadToken
+        context.coordinator.lastURL = url
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        guard context.coordinator.lastReloadToken != reloadToken else { return }
+        guard context.coordinator.lastReloadToken != reloadToken
+                || context.coordinator.lastURL != url else { return }
         context.coordinator.lastReloadToken = reloadToken
-        webView.reload()
+        context.coordinator.lastURL = url
+        webView.load(URLRequest(url: url))
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastReloadToken = 0
+        var lastURL: URL?
         private var loadState: Binding<ClientPageState>
 
         init(loadState: Binding<ClientPageState>) {

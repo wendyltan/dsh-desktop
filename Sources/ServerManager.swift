@@ -6,6 +6,35 @@ enum ServerManager {
     static let host = ProcessInfo.processInfo.environment["DSH_WEB_HOST"] ?? "127.0.0.1"
     static let port = Int(ProcessInfo.processInfo.environment["DSH_WEB_PORT"] ?? "3080") ?? 3080
     static var url: String { "http://\(host):\(port)/" }
+    static var webAccessURLFile: String { "\(home)/.dsh/guardian/web-access-url" }
+
+    static func validatedClientURL(_ candidate: String?, baseURL: String = url) -> URL {
+        guard let fallback = URL(string: baseURL),
+              let raw = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let target = URL(string: raw),
+              target.scheme?.lowercased() == fallback.scheme?.lowercased(),
+              target.host?.lowercased() == fallback.host?.lowercased(),
+              effectivePort(target) == effectivePort(fallback),
+              target.user == nil,
+              target.password == nil,
+              target.path == "/",
+              target.fragment == nil,
+              URLComponents(url: target, resolvingAgainstBaseURL: false)?
+                .queryItems?.contains(where: { $0.name == "token" && !($0.value ?? "").isEmpty }) == true
+        else { return URL(string: baseURL)! }
+        return target
+    }
+
+    static var clientURL: URL {
+        let candidate = try? String(contentsOfFile: webAccessURLFile, encoding: .utf8)
+        return validatedClientURL(candidate)
+    }
+
+    private static func effectivePort(_ target: URL) -> Int? {
+        target.port ?? (target.scheme?.lowercased() == "http" ? 80
+            : target.scheme?.lowercased() == "https" ? 443 : nil)
+    }
 
     static var launchScript: String { "\(home)/.dsh/dsh-desktop/launch.sh" }
     static var stopScript: String { "\(home)/.dsh/dsh-desktop/stop.sh" }

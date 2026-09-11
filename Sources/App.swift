@@ -46,7 +46,7 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             WebView(
-                url: URL(string: ServerManager.url)!,
+                url: ServerManager.clientURL,
                 reloadToken: store.reloadToken,
                 loadState: $pageState
             )

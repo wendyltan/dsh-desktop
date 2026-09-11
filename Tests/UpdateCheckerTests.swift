@@ -53,6 +53,20 @@ struct UpdateCheckerTests {
         expect(shellQuote("a b") == "'a b'", "shellQuote spaces")
         expect(shellQuote("it's") == "'it'\\''s'", "shellQuote single quote")
 
+        // 桌面窗口只接受 Guardian 写入的同源、带令牌根入口。
+        let baseURL = "http://127.0.0.1:3080/"
+        let acceptedURL = "http://127.0.0.1:3080/?token=test-secret"
+        expect(ServerManager.validatedClientURL(acceptedURL, baseURL: baseURL).absoluteString == acceptedURL,
+               "accept same-origin authenticated client URL")
+        expect(ServerManager.validatedClientURL("http://attacker.invalid/?token=test-secret", baseURL: baseURL).absoluteString == baseURL,
+               "reject cross-origin client URL")
+        expect(ServerManager.validatedClientURL("http://127.0.0.1:3081/?token=test-secret", baseURL: baseURL).absoluteString == baseURL,
+               "reject wrong-port client URL")
+        expect(ServerManager.validatedClientURL("http://127.0.0.1:3080/", baseURL: baseURL).absoluteString == baseURL,
+               "reject client URL without token")
+        expect(ServerManager.validatedClientURL("http://127.0.0.1:3080/path?token=test-secret", baseURL: baseURL).absoluteString == baseURL,
+               "reject authenticated non-root URL")
+
         // Guardian protocol 3 新增的版本历史、配置快照和事件范围保持可解码。
         let guardianJSON = #"""
         {
