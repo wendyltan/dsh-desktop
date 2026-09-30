@@ -28,6 +28,14 @@ struct BridgeSession: Decodable, Identifiable {
     var id: String { sessionId }
 }
 
+struct BridgeApproval: Decodable, Identifiable {
+    let id: String
+    let sessionId: String
+    let title: String
+    let message: String
+    let requiresNativeHandoff: Bool
+}
+
 private struct ModelsResponse: Decodable {
     let ok: Bool
     let models: [BridgeModel]
@@ -36,6 +44,15 @@ private struct ModelsResponse: Decodable {
 private struct SessionsResponse: Decodable {
     let ok: Bool
     let sessions: [BridgeSession]
+}
+
+private struct PendingApprovalsResponse: Decodable {
+    let ok: Bool
+    let approvals: [BridgeApproval]
+}
+
+private struct ApprovalActionResponse: Decodable {
+    let ok: Bool
 }
 
 private struct SummaryResponse: Decodable {
@@ -244,6 +261,52 @@ final class EventBridge {
                 } else if let data, let decoded = try? JSONDecoder().decode(SessionsResponse.self, from: data), decoded.ok {
                     result = .success(decoded.sessions)
                 } else { result = .failure(EventBridgeError.invalidResponse) }
+                DispatchQueue.main.async { completion(result) }
+            }.resume()
+        }
+    }
+
+    func fetchPendingApprovals(completion: @escaping (Result<[BridgeApproval], Error>) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let base = self.promptEndpoint?.deletingLastPathComponent() else {
+                DispatchQueue.main.async { completion(.failure(EventBridgeError.unavailable("Harness 尚未连接，无法读取待批准操作。"))) }
+                return
+            }
+            var request = URLRequest(url: base.appendingPathComponent("pending-approvals"))
+            request.timeoutInterval = 10
+            request.setValue("Bearer \(self.token)", forHTTPHeaderField: "Authorization")
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let result: Result<[BridgeApproval], Error>
+                if let error { result = .failure(error) }
+                else if let http = response as? HTTPURLResponse, http.statusCode == 200,
+                        let data, let decoded = try? JSONDecoder().decode(PendingApprovalsResponse.self, from: data), decoded.ok {
+                    result = .success(decoded.approvals)
+                } else { result = .failure(EventBridgeError.invalidResponse) }
+                DispatchQueue.main.async { completion(result) }
+            }.resume()
+        }
+    }
+
+    func deferApproval(_ id: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let base = self.promptEndpoint?.deletingLastPathComponent() else {
+                DispatchQueue.main.async { completion(.failure(EventBridgeError.unavailable("Harness 尚未连接，无法打开待批准操作。"))) }
+                return
+            }
+            var request = URLRequest(url: base.appendingPathComponent("approval"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = 10
+            request.setValue("Bearer \(self.token)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "protocolVersion": Self.protocolVersion, "eventId": id, "outcome": "defer-to-web",
+            ])
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let result: Result<Void, Error>
+                if let error { result = .failure(error) }
+                else if let http = response as? HTTPURLResponse, http.statusCode == 200,
+                        let data, let decoded = try? JSONDecoder().decode(ApprovalActionResponse.self, from: data), decoded.ok { result = .success(()) }
+                else { result = .failure(EventBridgeError.invalidResponse) }
                 DispatchQueue.main.async { completion(result) }
             }.resume()
         }

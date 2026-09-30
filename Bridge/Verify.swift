@@ -7,6 +7,7 @@ private final class StatusStub {
     private let lock = NSLock()
     private let readySignal = DispatchSemaphore(value: 0)
     private var isReady = false
+    private var approvalStatus = 200
 
     init(port: UInt16) throws {
         let parameters = NWParameters.tcp
@@ -27,15 +28,27 @@ private final class StatusStub {
         lock.lock(); isReady = ready; lock.unlock()
     }
 
+    func setApprovalStatus(_ status: Int) {
+        lock.lock(); approvalStatus = status; lock.unlock()
+    }
+
     func stop() { listener.cancel() }
 
     private func respond(_ connection: NWConnection) {
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] _, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, _, _ in
             guard let self else { connection.cancel(); return }
+            let request = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             self.lock.lock(); let ready = self.isReady; self.lock.unlock()
-            let body = try! JSONSerialization.data(withJSONObject: ["ok": true, "ready": ready, "protocolVersion": 1])
-            var response = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+            self.lock.lock(); let approvalStatus = self.approvalStatus; self.lock.unlock()
+            let isApprovals = request.hasPrefix("GET /dsh-desktop-bridge/pending-approvals ")
+            let isApprovalAction = request.hasPrefix("POST /dsh-desktop-bridge/approval ")
+            let status = isApprovals ? approvalStatus : 200
+            let object: [String: Any] = isApprovals
+                ? ["ok": status == 200, "approvals": status == 200 ? [["id": "approval-1", "sessionId": "session-1", "title": "批准", "message": "工具请求", "requiresNativeHandoff": true]] : []]
+                : (isApprovalAction ? ["ok": true] : ["ok": true, "ready": ready, "protocolVersion": 1])
+            let body = try! JSONSerialization.data(withJSONObject: object)
+            var response = Data("HTTP/1.1 \(status) OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
             response.append(body)
             connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
         }
@@ -59,7 +72,7 @@ struct BridgeVerify {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let bridge = try EventBridge()
-        let statusStub = try StatusStub(port: 13992)
+        let statusStub = try StatusStub(port: 14992)
         try statusStub.start()
         defer { statusStub.stop() }
         var received = 0
@@ -94,7 +107,7 @@ struct BridgeVerify {
         precondition(initialStatus?["promptConnected"] as? Bool == false)
         let disconnected = DesktopBridgeEvent(protocolVersion: 1, id: "verify-unready", type: "bridge.connected",
                                               title: "桥接", message: "等待 Harness 健康检查", sessionId: nil,
-                                              callbackURL: nil, promptURL: "http://127.0.0.1:13992/dsh-desktop-bridge/prompt")
+                                              callbackURL: nil, promptURL: "http://127.0.0.1:14992/dsh-desktop-bridge/prompt")
         let (_, registered) = try await request(path: "v1/events", event: disconnected)
         precondition(registered.statusCode == 202)
         try await Task.sleep(nanoseconds: 250_000_000)
@@ -104,7 +117,7 @@ struct BridgeVerify {
         statusStub.setReady(true)
         let healthy = DesktopBridgeEvent(protocolVersion: 1, id: "verify-ready", type: "bridge.connected",
                                          title: "桥接", message: "Harness 健康检查通过", sessionId: nil,
-                                         callbackURL: nil, promptURL: "http://127.0.0.1:13992/dsh-desktop-bridge/prompt")
+                                         callbackURL: nil, promptURL: "http://127.0.0.1:14992/dsh-desktop-bridge/prompt")
         let (_, rechecked) = try await request(path: "v1/events", event: healthy)
         precondition(rechecked.statusCode == 202)
         let deadline = Date().addingTimeInterval(3)
@@ -119,10 +132,28 @@ struct BridgeVerify {
         let healthyStatus = try JSONSerialization.jsonObject(with: healthyStatusData) as? [String: Any]
         precondition(healthyStatus?["promptConnected"] as? Bool == true)
 
+        func fetchApprovals() async -> Result<[BridgeApproval], Error> {
+            await withCheckedContinuation { continuation in
+                bridge.fetchPendingApprovals { continuation.resume(returning: $0) }
+            }
+        }
+        let approvals = await fetchApprovals()
+        guard case .success(let items) = approvals else { preconditionFailure("pending approvals should decode") }
+        precondition(items.first?.id == "approval-1" && items.first?.sessionId == "session-1"
+                     && items.first?.requiresNativeHandoff == true)
+        let deferred = await withCheckedContinuation { continuation in
+            bridge.deferApproval("approval-1") { continuation.resume(returning: $0) }
+        }
+        if case .failure(let error) = deferred { throw error }
+        statusStub.setApprovalStatus(503)
+        let unavailableApprovals = await fetchApprovals()
+        if case .success = unavailableApprovals { preconditionFailure("HTTP errors must not appear as an empty approval snapshot") }
+        statusStub.setApprovalStatus(200)
+
         statusStub.setReady(false)
         let down = DesktopBridgeEvent(protocolVersion: 1, id: "verify-down", type: "bridge.connected",
                                       title: "桥接", message: "Harness 健康检查失联", sessionId: nil,
-                                      callbackURL: nil, promptURL: "http://127.0.0.1:13992/dsh-desktop-bridge/prompt")
+                                      callbackURL: nil, promptURL: "http://127.0.0.1:14992/dsh-desktop-bridge/prompt")
         let (_, checkedDown) = try await request(path: "v1/events", event: down)
         precondition(checkedDown.statusCode == 202)
         let downDeadline = Date().addingTimeInterval(3)

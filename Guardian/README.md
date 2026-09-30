@@ -1,6 +1,6 @@
 # DSH 安全启动链
 
-桌面保护组件运行在 `dsh web` 进程之外，避免修复工具随 DSH 一起崩溃。它与 dsh-desktop 作为同一个桌面产品发布并使用相同版本号；当前均为 `0.4.0`。
+桌面保护组件运行在 `dsh web` 进程之外，避免修复工具随 DSH 一起崩溃。它与 dsh-desktop 一起发布，当前版本均为 `0.5.0`。
 
 本目录是 Guardian 的唯一源码，随 dsh-desktop 构建和安装。`dsh-ops-console` 只是可选控制面板，通过 JSON 协议调用运行副本，不保存 Guardian 实现。
 

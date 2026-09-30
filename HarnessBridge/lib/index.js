@@ -139,6 +139,15 @@ export function apply(ctx) {
       })) })
     })
 
+    route('/dsh-desktop-bridge/pending-approvals', async (request, response) => {
+      if (request.method !== 'GET') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
+      if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
+      const approvals = [...pending.values()].map(({ id, sessionId, title, message, requiresNativeHandoff }) => ({
+        id, sessionId, title, message, requiresNativeHandoff,
+      }))
+      sendJson(response, 200, { ok: true, approvals })
+    })
+
     route('/dsh-desktop-bridge/models', async (request, response) => {
       if (request.method !== 'GET') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
       if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
@@ -216,11 +225,13 @@ export function apply(ctx) {
       if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
       const body = await readJsonBody(request)
       const item = pending.get(body?.eventId)
-      if (item === undefined) return sendJson(response, 409, { ok: false, error: 'approval is no longer pending' })
+      if (body?.protocolVersion !== PROTOCOL_VERSION) return sendJson(response, 400, { ok: false, error: 'invalid protocol version' })
+      if (item === undefined || item.decided) return sendJson(response, 409, { ok: false, error: 'approval is no longer pending' })
       if (!['allowed-once', 'rejected', 'defer-to-web'].includes(body?.outcome)) {
         return sendJson(response, 400, { ok: false, error: 'invalid outcome' })
       }
-      pending.delete(body.eventId)
+      item.decided = true
+      if (body.outcome === 'defer-to-web') item.requiresNativeHandoff = false
       item.resolve(body.outcome)
       sendJson(response, 200, { ok: true })
     })
@@ -231,6 +242,7 @@ export function apply(ctx) {
     disposers.push(ctx.on('agent/disposed', ({ agent }) => {
       const id = String(agent.id)
       agents.delete(id); running.delete(id); failed.delete(id)
+      for (const [eventId, item] of pending) if (item.agentId === id) item.cancel()
     }))
     disposers.push(ctx.on('agent/status', ({ agent, status }) => {
       const sessionId = String(agent.id)
@@ -269,27 +281,56 @@ export function apply(ctx) {
     disposers.push(ctx.on('approval/request', async (req, next) => {
       if (req.signal?.aborted) return 'cancelled'
       const eventId = `approval-${approvalId(req)}`
-      let settle
-      const decision = new Promise((resolve) => { settle = resolve })
-      const finish = (value) => {
-        req.signal?.removeEventListener('abort', abort)
-        settle(value)
+      const existing = pending.get(eventId)
+      if (existing) return existing.completion
+
+      let resolveDecision
+      const decision = new Promise((resolve) => { resolveDecision = resolve })
+      let resolveCompletion
+      const completion = new Promise((resolve) => { resolveCompletion = resolve })
+      let cancel
+      const cancelled = new Promise((resolve) => { cancel = resolve })
+      const sessionId = String(req.agent.session.id)
+      const item = {
+        id: eventId, agentId: String(req.agent.id), sessionId,
+        title: 'Harness 需要你的批准', message: `工具 ${req.toolName} 请求执行受限操作。`,
+        decided: false, cancelled: false, requiresNativeHandoff: true, completion,
+        resolve: (value) => resolveDecision(value),
+        cancel: () => {
+          if (item.cancelled) return
+          item.cancelled = true
+          if (pending.get(eventId) === item) pending.delete(eventId)
+          resolveDecision('cancelled')
+          cancel('cancelled')
+        },
       }
-      const abort = () => { pending.delete(eventId); finish('cancelled') }
-      pending.set(eventId, { resolve: finish })
+      const removePending = () => { if (pending.get(eventId) === item) pending.delete(eventId) }
+      pending.set(eventId, item)
+      const abort = () => item.cancel()
       req.signal?.addEventListener('abort', abort, { once: true })
-      const delivered = await postDesktop({
-        id: eventId, type: 'approval.requested', title: 'Harness 需要你的批准',
-        message: `工具 ${req.toolName} 请求执行受限操作。`,
-        sessionId: String(req.agent.session.id), callbackURL: CALLBACK,
-      })
-      if (!delivered) {
-        pending.delete(eventId)
+      try {
+        const delivered = await postDesktop({
+          id: eventId, type: 'approval.requested', title: item.title,
+          message: item.message, sessionId, callbackURL: CALLBACK,
+        })
+        if (!delivered) {
+          item.decided = true
+          item.requiresNativeHandoff = false
+        }
+        const outcome = item.cancelled ? 'cancelled' : delivered ? await Promise.race([decision, cancelled]) : 'defer-to-web'
+        const result = outcome === 'defer-to-web' && !item.cancelled
+          ? await Promise.race([Promise.resolve().then(next), cancelled])
+          : outcome
+        resolveCompletion(result)
+        return result
+      } catch (error) {
+        removePending()
+        resolveCompletion('cancelled')
+        throw error
+      } finally {
+        removePending()
         req.signal?.removeEventListener('abort', abort)
-        return req.signal?.aborted ? 'cancelled' : next()
       }
-      const outcome = await decision
-      return outcome === 'defer-to-web' ? next() : outcome
     }, { prepend: true }))
 
     const announce = () => void postDesktop({
@@ -302,7 +343,7 @@ export function apply(ctx) {
 
     return () => {
       clearInterval(reconnectTimer)
-      for (const item of pending.values()) item.resolve('cancelled')
+      for (const item of pending.values()) item.cancel()
       pending.clear()
       for (const dispose of disposers.reverse()) dispose()
     }

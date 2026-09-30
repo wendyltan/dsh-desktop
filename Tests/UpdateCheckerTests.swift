@@ -86,7 +86,7 @@ struct UpdateCheckerTests {
         let guardianJSON = #"""
         {
           "ok": true,
-          "guardianVersion": "0.4.0",
+          "guardianVersion": "0.5.0",
           "protocolVersion": 3,
           "engine": "0.1.2",
           "engineHistory": [{
@@ -107,7 +107,7 @@ struct UpdateCheckerTests {
         }
         """#
         let decoded = try? JSONDecoder().decode(GuardianResponse.self, from: Data(guardianJSON.utf8))
-        expect(decoded?.guardianVersion == "0.4.0", "guardian protocol 3 version")
+        expect(decoded?.guardianVersion == "0.5.0", "guardian protocol 3 version")
         expect(decoded?.engineHistory?.first?.version == "0.1.1", "guardian engine history decode")
         expect(decoded?.recoverySnapshots?.first?.diffTotal == 2, "guardian recovery snapshot decode")
         expect(decoded?.recentEvents?.first?.scope == "engine", "guardian event scope decode")

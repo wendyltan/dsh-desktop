@@ -12,9 +12,19 @@ writeFileSync(join(root, 'desktop-bridge', 'token'), token + '\n')
 
 let desktopAvailable = true
 const desktopEvents = []
+let heldApprovalId = null
+let releaseHeldApproval
+let heldApprovalEntered
+let resolveHeldApprovalEntered
 globalThis.fetch = async (_url, options) => {
+  const event = JSON.parse(options.body)
+  if (event.type === 'approval.requested' && event.id === heldApprovalId) {
+    heldApprovalId = null
+    resolveHeldApprovalEntered()
+    await new Promise((resolve) => { releaseHeldApproval = resolve })
+  }
   if (!desktopAvailable) throw new Error('desktop unavailable')
-  desktopEvents.push(JSON.parse(options.body))
+  desktopEvents.push(event)
   return { ok: true }
 }
 
@@ -80,11 +90,11 @@ const ctx = {
   },
 }
 
-function invoke(path, body = null) {
+function invoke(path, body = null, authenticated = true) {
   return new Promise((resolve, reject) => {
     const request = new EventEmitter()
     request.method = body === null ? 'GET' : 'POST'
-    request.headers = { authorization: `Bearer ${token}` }
+    request.headers = authenticated ? { authorization: `Bearer ${token}` } : {}
     const response = {
       status: 0, headers: {}, body: '',
       writeHead(status, headers) { this.status = status; this.headers = headers },
@@ -129,6 +139,10 @@ try {
     ['session-fork', 'session-fork', '/work/fork'],
   ])
 
+  const unauthorizedApprovals = await invoke('/dsh-desktop-bridge/pending-approvals', null, false)
+  assert.equal(unauthorizedApprovals.status, 401)
+  const pendingApprovals = () => invoke('/dsh-desktop-bridge/pending-approvals')
+
   hooks.get('session/event')[0](agents.get('session-new').session, {
     type: 'step/start', seq: 42, data: { turn: 0, step: 1 },
   })
@@ -169,23 +183,118 @@ try {
   const request = { agent, toolName: 'bash', callId: 'call-id', signal: new AbortController().signal }
   const allowedPromise = approvalHandler(request, async () => 'web-fallback')
   await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals.map(({ id, sessionId }) => [id, sessionId]), [
+    ['approval-approval-id', 'session-new'],
+  ])
   const allowed = await invoke('/dsh-desktop-bridge/approval', {
     protocolVersion: 1, eventId: 'approval-approval-id', outcome: 'allowed-once',
   })
   assert.equal(allowed.status, 200)
   assert.equal(await allowedPromise, 'allowed-once')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
 
   agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-defer', callId: 'call-defer' } }]
-  const deferPromise = approvalHandler({ ...request, callId: 'call-defer' }, async () => 'web-fallback')
+  let resolveWeb
+  let webCalls = 0
+  const deferPromise = approvalHandler({ ...request, callId: 'call-defer' }, () => {
+    webCalls += 1
+    return new Promise((resolve) => { resolveWeb = resolve })
+  })
   await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals[0].requiresNativeHandoff, true)
   await invoke('/dsh-desktop-bridge/approval', {
     protocolVersion: 1, eventId: 'approval-approval-defer', outcome: 'defer-to-web',
   })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(webCalls, 1)
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals[0].requiresNativeHandoff, false)
+  const duplicateDefer = await invoke('/dsh-desktop-bridge/approval', {
+    protocolVersion: 1, eventId: 'approval-approval-defer', outcome: 'defer-to-web',
+  })
+  assert.equal(duplicateDefer.status, 409)
+  resolveWeb('web-fallback')
   assert.equal(await deferPromise, 'web-fallback')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
 
   desktopAvailable = false
   agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-offline', callId: 'call-offline' } }]
-  assert.equal(await approvalHandler({ ...request, callId: 'call-offline' }, async () => 'web-fallback'), 'web-fallback')
+  let resolveOfflineWeb
+  const offlinePromise = approvalHandler({ ...request, callId: 'call-offline' }, () => new Promise((resolve) => { resolveOfflineWeb = resolve }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const offlineApproval = JSON.parse((await pendingApprovals()).body).approvals[0]
+  assert.equal(offlineApproval.requiresNativeHandoff, false)
+  const staleOfflineCallback = await invoke('/dsh-desktop-bridge/approval', {
+    protocolVersion: 1, eventId: 'approval-approval-offline', outcome: 'allowed-once',
+  })
+  assert.equal(staleOfflineCallback.status, 409)
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals.length, 1)
+  const staleOfflineRejection = await invoke('/dsh-desktop-bridge/approval', {
+    protocolVersion: 1, eventId: 'approval-approval-offline', outcome: 'rejected',
+  })
+  assert.equal(staleOfflineRejection.status, 409)
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals.length, 1)
+  resolveOfflineWeb('web-fallback')
+  assert.equal(await offlinePromise, 'web-fallback')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
+
+  desktopAvailable = true
+  agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-reject', callId: 'call-reject' } }]
+  const rejectPromise = approvalHandler({ ...request, callId: 'call-reject' }, async () => 'web-fallback')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const rejected = await invoke('/dsh-desktop-bridge/approval', {
+    protocolVersion: 1, eventId: 'approval-approval-reject', outcome: 'rejected',
+  })
+  assert.equal(rejected.status, 200)
+  assert.equal(await rejectPromise, 'rejected')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
+
+  agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-abort', callId: 'call-abort' } }]
+  const abortController = new AbortController()
+  const abortPromise = approvalHandler({ ...request, callId: 'call-abort', signal: abortController.signal }, async () => 'web-fallback')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  abortController.abort()
+  assert.equal(await abortPromise, 'cancelled')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
+
+  agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-retry', callId: 'call-retry' } }]
+  const retryAbort = new AbortController()
+  heldApprovalId = 'approval-approval-retry'
+  heldApprovalEntered = new Promise((resolve) => { resolveHeldApprovalEntered = resolve })
+  const oldRetry = approvalHandler({ ...request, callId: 'call-retry', signal: retryAbort.signal }, async () => 'web-fallback')
+  await heldApprovalEntered
+  retryAbort.abort()
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals.length, 0)
+  const newRetry = approvalHandler({ ...request, callId: 'call-retry' }, async () => 'web-fallback')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals[0].id, 'approval-approval-retry')
+  releaseHeldApproval()
+  assert.equal(await oldRetry, 'cancelled')
+  assert.equal(JSON.parse((await pendingApprovals()).body).approvals[0].id, 'approval-approval-retry')
+  await invoke('/dsh-desktop-bridge/approval', {
+    protocolVersion: 1, eventId: 'approval-approval-retry', outcome: 'allowed-once',
+  })
+  assert.equal(await newRetry, 'allowed-once')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
+
+  agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-disposed', callId: 'call-disposed' } }]
+  const disposedPromise = approvalHandler({ ...request, callId: 'call-disposed' }, async () => 'web-fallback')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  hooks.get('agent/disposed')[0]({ agent })
+  assert.equal(await disposedPromise, 'cancelled')
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
+
+  agent.session.events = [{ type: 'approval/asked', data: { id: 'approval-duplicate', callId: 'call-duplicate' } }]
+  const duplicateRequest = { ...request, callId: 'call-duplicate' }
+  const beforeDuplicate = desktopEvents.filter(({ type }) => type === 'approval.requested').length
+  const firstDuplicate = approvalHandler(duplicateRequest, async () => 'web-fallback')
+  const secondDuplicate = approvalHandler(duplicateRequest, async () => 'web-fallback')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(desktopEvents.filter(({ type }) => type === 'approval.requested').length, beforeDuplicate + 1)
+  await invoke('/dsh-desktop-bridge/approval', {
+    protocolVersion: 1, eventId: 'approval-approval-duplicate', outcome: 'allowed-once',
+  })
+  assert.deepEqual(await Promise.all([firstDuplicate, secondDuplicate]), ['allowed-once', 'allowed-once'])
+  assert.deepEqual(JSON.parse((await pendingApprovals()).body).approvals, [])
 
   console.log('Harness bridge verification passed: automatic task lifecycle notifications, explicit session list/summary/prompt, durable progress, native approval, Web fallback and offline fallback')
 } finally {

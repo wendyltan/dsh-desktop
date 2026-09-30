@@ -40,6 +40,11 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/EventBridge.swift Bridge/Verify.swift -framework Network -o bin/bridge-tests
 DSH_DESKTOP_BRIDGE_PORT=13991 "$ROOT/bin/bridge-tests"
 
+echo "== 快速提问会话状态单测 =="
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
+  Sources/QuickPromptPanel.swift Tests/QuickPromptPanelTests.swift -o bin/quick-prompt-tests
+bin/quick-prompt-tests
+
 echo "== Guardian 集成验证 =="
 node Guardian/verify.mjs
 if [ "${1:-}" = "--installed-engines" ]; then

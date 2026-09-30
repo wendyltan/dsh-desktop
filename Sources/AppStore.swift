@@ -46,6 +46,11 @@ final class AppStore: NSObject, ObservableObject {
     @Published var quickPromptModels: [BridgeModel] = []
     @Published var quickPromptSummary: String = ""
     private var balanceTimer: Timer?
+    private var pendingApprovals: [BridgeApproval] = []
+    private var pendingApprovalError: String? = "正在连接 Harness"
+    private var pendingRefreshInFlight = false
+    private var sessionsRefreshInFlight = false
+    private var bridgeGeneration = 0
 
     /// 是否处于低余额预警。
     var balanceLow: Bool {
@@ -126,6 +131,8 @@ final class AppStore: NSObject, ObservableObject {
 
     private var statusItem: NSStatusItem?
     private var updateMenuItem: NSMenuItem?
+    private var pendingMenuItem: NSMenuItem?
+    private let statusBarLogoOpticalLift: CGFloat = 0.5
     var desktopVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "开发版"
     }
@@ -135,17 +142,18 @@ final class AppStore: NSObject, ObservableObject {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            if let logo = statusBarLogo() {
-                button.image = logo
-                button.imagePosition = .imageLeft
-            }
-            button.attributedTitle = balanceAttributedTitle()
+            button.image = nil
+            button.attributedTitle = statusBarAttributedTitle()
             button.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
         }
         let menu = NSMenu()
         let version = NSMenuItem(title: "DeepSeek Harness v\(desktopVersion)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)
+        menu.addItem(.separator())
+        let pendingItem = NSMenuItem(title: "正在读取待处理事项…", action: nil, keyEquivalent: "")
+        pendingMenuItem = pendingItem
+        menu.addItem(pendingItem)
         menu.addItem(.separator())
         let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
         ask.target = self
@@ -171,6 +179,7 @@ final class AppStore: NSObject, ObservableObject {
         menu.addItem(quit)
         item.menu = menu
         statusItem = item
+        refreshPendingMenu()
     }
 
     /// 有新版本时，把「检查更新」菜单项改成提示文案。
@@ -184,7 +193,7 @@ final class AppStore: NSObject, ObservableObject {
     /// 刷新菜单栏余额文字与颜色（绿/红按阈值）。
     func updateStatusItemBalance() {
         guard let button = statusItem?.button else { return }
-        button.attributedTitle = balanceAttributedTitle()
+        button.attributedTitle = statusBarAttributedTitle()
         if !settings.showBalanceInMenuBar {
             button.toolTip = "DeepSeek Harness"
         } else if balanceError != nil {
@@ -192,10 +201,29 @@ final class AppStore: NSObject, ObservableObject {
         } else {
             button.toolTip = "DeepSeek Harness · 账户余额"
         }
+        if let error = pendingApprovalError {
+            button.toolTip = "\(button.toolTip ?? "DeepSeek Harness") · 待处理状态：\(error)"
+        } else if !pendingApprovals.isEmpty {
+            button.toolTip = "\(button.toolTip ?? "DeepSeek Harness") · \(pendingApprovals.count) 项需要你处理"
+        }
     }
 
-    private func balanceAttributedTitle() -> NSAttributedString {
-        guard settings.showBalanceInMenuBar else { return NSAttributedString(string: "") }
+    private func statusBarAttributedTitle() -> NSAttributedString {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        let result = NSMutableAttributedString()
+        if let logo = statusBarLogo() {
+            let tinted = NSImage(size: logo.size, flipped: false) { rect in
+                logo.draw(in: rect)
+                NSColor.labelColor.setFill()
+                rect.fill(using: .sourceIn)
+                return true
+            }
+            let attachment = NSTextAttachment()
+            attachment.image = tinted
+            // Align the image centre to the digit/capital centre on the same text baseline.
+            attachment.bounds = NSRect(x: 0, y: (font.capHeight - 15) / 2 + statusBarLogoOpticalLift, width: 15, height: 15)
+            result.append(NSAttributedString(attachment: attachment))
+        }
         let text: String
         let color: NSColor
         if balanceError != nil {
@@ -208,10 +236,82 @@ final class AppStore: NSObject, ObservableObject {
             text = "余额 ··"
             color = .secondaryLabelColor
         }
-        return NSAttributedString(string: text, attributes: [
-            .foregroundColor: color,
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-        ])
+        if settings.showBalanceInMenuBar {
+            result.append(NSAttributedString(string: " \(text)", attributes: [.foregroundColor: color, .font: font]))
+        }
+        if !pendingApprovals.isEmpty {
+            let pending = pendingApprovalError == nil ? "待处理 \(pendingApprovals.count)" : "待处理 ?"
+            let separator = settings.showBalanceInMenuBar ? " · " : " "
+            result.append(NSAttributedString(string: separator + pending, attributes: [.foregroundColor: NSColor.systemOrange, .font: font]))
+        }
+        return result
+    }
+
+    private func refreshPendingMenu() {
+        guard let item = pendingMenuItem else { return }
+        item.submenu = nil
+        item.target = self
+        if pendingApprovalError != nil {
+            item.title = "待处理状态暂不可用 · 重试"
+            item.action = #selector(menuRefreshPendingApprovals)
+            item.isEnabled = true
+        } else if pendingApprovals.isEmpty {
+            item.title = "暂无待处理事项"
+            item.action = nil
+            item.isEnabled = false
+        } else {
+            item.title = "需要你处理（\(pendingApprovals.count)）"
+            item.action = nil
+            item.isEnabled = true
+            let menu = NSMenu()
+            for approval in pendingApprovals {
+                let sessionTitle = quickPrompt.sessions.first(where: { $0.sessionId == approval.sessionId })?.title
+                let title = [sessionTitle, approval.message.isEmpty ? approval.title : approval.message].compactMap { $0 }.joined(separator: " · ")
+                let action = NSMenuItem(title: String(title.replacingOccurrences(of: "\n", with: " ").prefix(100)), action: #selector(menuOpenPendingApproval(_:)), keyEquivalent: "")
+                action.target = self
+                action.representedObject = approval
+                action.toolTip = "打开对应会话，由你在客户端处理审批"
+                menu.addItem(action)
+            }
+            item.submenu = menu
+        }
+        updateStatusItemBalance()
+    }
+
+    @objc private func menuRefreshPendingApprovals() { refreshPendingApprovals() }
+
+    @objc private func menuOpenPendingApproval(_ item: NSMenuItem) {
+        guard let approval = item.representedObject as? BridgeApproval else { return }
+        guard approval.requiresNativeHandoff else { openSession(approval.sessionId); return }
+        eventBridge?.deferApproval(approval.id) { [weak self] result in
+            guard let self else { return }
+            self.openSession(approval.sessionId)
+            if case .failure = result { self.nativeActionMessage = "审批状态已变化或暂时无法交回网页，请在对应会话中确认。" }
+            self.refreshPendingApprovals()
+        }
+    }
+
+    private func refreshPendingApprovals() {
+        guard let bridge = eventBridge, !pendingRefreshInFlight else { return }
+        pendingRefreshInFlight = true
+        let generation = bridgeGeneration
+        bridge.fetchPendingApprovals { [weak self] result in
+            guard let self else { return }
+            self.pendingRefreshInFlight = false
+            guard generation == self.bridgeGeneration else {
+                if self.quickPrompt.connected { self.refreshPendingApprovals() }
+                return
+            }
+            if !self.bridgeStatus.hasPrefix("事件桥已连接") {
+                self.pendingApprovalError = "Harness 尚未连接"
+            } else {
+                switch result {
+                case .success(let approvals): self.pendingApprovals = approvals; self.pendingApprovalError = nil
+                case .failure: self.pendingApprovalError = "暂时无法读取"
+                }
+            }
+            self.refreshPendingMenu()
+        }
     }
 
     /// 菜单栏 Logo：优先用 Harness favicon（SVG，模板图，随菜单栏自动着色），
@@ -344,10 +444,28 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func refreshQuickPromptSessions() {
-        guard let bridge = eventBridge else { return }
+        guard let bridge = eventBridge else {
+            quickPrompt.sessionsError = "Harness 尚未连接，连接后可重试。"
+            return
+        }
+        guard !sessionsRefreshInFlight else { return }
+        sessionsRefreshInFlight = true
+        let generation = bridgeGeneration
+        quickPrompt.sessionsLoading = true
+        quickPrompt.sessionsError = nil
         bridge.fetchSessions { [weak self] result in
             guard let self else { return }
-            if case .success(let sessions) = result { self.quickPrompt.sessions = sessions }
+            self.sessionsRefreshInFlight = false
+            self.quickPrompt.sessionsLoading = false
+            guard generation == self.bridgeGeneration else {
+                if self.quickPrompt.connected { self.refreshQuickPromptSessions() }
+                return
+            }
+            switch result {
+            case .success(let sessions): self.quickPrompt.sessions = sessions
+            case .failure(let error): self.quickPrompt.sessionsError = "无法读取会话列表：\(error.localizedDescription)"
+            }
+            self.refreshPendingMenu()
         }
     }
 
@@ -421,13 +539,17 @@ final class AppStore: NSObject, ObservableObject {
         metrics.onChange = { [weak self] snapshot in self?.nativeMetrics = snapshot }
 
         notificationService.onOpenSession = { [weak self] sessionId in self?.openSession(sessionId) }
-        notificationService.onActionResult = { [weak self] message in self?.nativeActionMessage = message }
+        notificationService.onActionResult = { [weak self] message in
+            self?.nativeActionMessage = message
+            self?.refreshPendingApprovals()
+        }
         notificationService.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         notificationService.start()
 
         quickPrompt.onOpenClient = { [weak self] in self?.showClientPanel() }
         quickPrompt.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         quickPrompt.onSessionChange = { [weak self] sessionId in self?.refreshQuickPromptSummary(sessionId: sessionId) }
+        quickPrompt.onRetrySessions = { [weak self] in self?.refreshQuickPromptSessions() }
         quickPrompt.onSend = { [weak self] prompt, mode, sessionId, cwd, completion in
             guard let self, let bridge = self.eventBridge else {
                 completion(.failure(EventBridgeError.unavailable("事件桥不可用，草稿已保留。")))
@@ -461,14 +583,27 @@ final class AppStore: NSObject, ObservableObject {
                 case "task.failed": self.nativeTaskStatus = "最近任务执行失败"
                 default: break
                 }
-                if event.type == "bridge.connected" { self.refreshQuickPromptModels() }
+                if event.type == "bridge.connected" {
+                    self.bridgeGeneration += 1
+                    self.refreshQuickPromptModels()
+                }
+                self.refreshPendingApprovals()
                 if event.type.hasPrefix("guardian.") { self.refreshGuardian() }
             }, approvalAllowed: { [weak self] in
                 self?.notificationService.canDeliverApproval() == true
             }, onState: { [weak self] state in
                 guard let self else { return }
+                let wasConnected = self.quickPrompt.connected
                 self.bridgeStatus = state
                 self.quickPrompt.connected = state.hasPrefix("事件桥已连接")
+                if wasConnected != self.quickPrompt.connected { self.bridgeGeneration += 1 }
+                if self.quickPrompt.connected {
+                    self.refreshPendingApprovals()
+                    if !wasConnected { self.refreshQuickPromptSessions() }
+                } else {
+                    self.pendingApprovalError = "Harness 尚未连接"
+                    self.refreshPendingMenu()
+                }
             })
         } catch {
             bridgeStatus = "事件桥启动失败：\(error.localizedDescription)"

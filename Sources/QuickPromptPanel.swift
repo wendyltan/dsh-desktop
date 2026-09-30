@@ -11,6 +11,8 @@ final class QuickPromptModel: ObservableObject {
     @Published var summary = ""
     @Published var sessions: [BridgeSession] = []
     @Published var selectedSessionId: String?
+    @Published var sessionsLoading = false
+    @Published var sessionsError: String?
     @Published var newSessionDirectory = NSHomeDirectory()
 }
 
@@ -20,9 +22,23 @@ struct QuickPromptView: View {
     let openClient: () -> Void
     let close: () -> Void
     let sessionChanged: (String?) -> Void
+    let onRetrySessions: (() -> Void)?
     @FocusState private var focused: Bool
 
     private var isExistingSession: Bool { model.modeHint == "已有会话" }
+    private var canTargetSession: Bool {
+        !model.sessionsLoading && model.sessionsError == nil && !model.sessions.isEmpty
+            && model.sessions.contains(where: { $0.sessionId == model.selectedSessionId })
+    }
+
+    private var duplicateSessionTitles: Set<String> {
+        Set(Dictionary(grouping: model.sessions, by: \.title).filter { $0.value.count > 1 }.keys)
+    }
+
+    private func directoryLabel(for session: BridgeSession) -> String {
+        guard !session.cwd.isEmpty else { return "目录未知" }
+        return duplicateSessionTitles.contains(session.title) ? URL(fileURLWithPath: session.cwd).lastPathComponent : ""
+    }
 
     private var statusIcon: String {
         if model.sending { return "arrow.up.circle.fill" }
@@ -100,14 +116,47 @@ struct QuickPromptView: View {
                 }
 
                 if isExistingSession {
-                    Picker("目标会话", selection: $model.selectedSessionId) {
-                        Text("选择会话").tag(String?.none)
-                        ForEach(model.sessions) { session in
-                            Text("\(session.title) · \(session.cwd.isEmpty ? "目录未知" : session.cwd)")
-                                .tag(Optional(session.sessionId))
+                    VStack(alignment: .leading, spacing: 7) {
+                        if model.sessionsLoading {
+                            Label("正在加载会话…", systemImage: "hourglass")
+                                .foregroundStyle(.secondary)
+                        } else if let error = model.sessionsError {
+                            HStack(spacing: 8) {
+                                Label(error, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(2)
+                                Button("重试", action: { onRetrySessions?() })
+                                    .disabled(onRetrySessions == nil)
+                            }
+                        } else if model.sessions.isEmpty {
+                            Label("没有可用会话", systemImage: "tray")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("目标会话", selection: $model.selectedSessionId) {
+                                Text("选择会话").tag(String?.none)
+                                ForEach(model.sessions) { session in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(session.title)
+                                        if !directoryLabel(for: session).isEmpty {
+                                            Text(directoryLabel(for: session))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .tag(Optional(session.sessionId))
+                                }
+                            }
+                            .disabled(model.sending)
+                            if let session = model.sessions.first(where: { $0.sessionId == model.selectedSessionId }) {
+                                Text(session.cwd.isEmpty ? "目录未知" : session.cwd)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(session.cwd.isEmpty ? "目录未知" : session.cwd)
+                            }
                         }
                     }
-                    .disabled(model.sessions.isEmpty || model.sending)
                 } else {
                     HStack(spacing: 8) {
                         Text("新会话目录")
@@ -178,7 +227,7 @@ struct QuickPromptView: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .buttonStyle(.borderedProminent)
                     .disabled(model.sending || !model.connected || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || (isExistingSession && model.selectedSessionId == nil)
+                              || (isExistingSession && !canTargetSession)
                               || (!isExistingSession && model.newSessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
@@ -196,6 +245,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     var onSend: ((String, String, String?, String?, @escaping (Result<Void, Error>) -> Void) -> Void)?
     var onSessionChange: ((String?) -> Void)?
+    var onRetrySessions: (() -> Void)?
     var onOpenClient: (() -> Void)?
     var onMetric: ((NativeMetric, String?) -> Void)?
 
@@ -224,8 +274,26 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         set {
             let previousSelection = model.selectedSessionId
             model.sessions = newValue
-            model.selectedSessionId = newValue.first(where: { $0.sessionId == previousSelection })?.sessionId ?? newValue.first?.sessionId
+            model.selectedSessionId = newValue.first(where: { $0.sessionId == previousSelection })?.sessionId
             onSessionChange?(model.selectedSessionId)
+        }
+    }
+
+    var sessionsLoading: Bool {
+        get { model.sessionsLoading }
+        set { model.sessionsLoading = newValue }
+    }
+
+    var sessionsError: String? {
+        get { model.sessionsError }
+        set {
+            model.sessionsError = newValue
+            if newValue != nil {
+                model.sessionsLoading = false
+                model.sessions = []
+                model.selectedSessionId = nil
+                onSessionChange?(nil)
+            }
         }
     }
 
@@ -269,7 +337,8 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
             send: { [weak self] in self?.submit() },
             openClient: { [weak self] in self?.onOpenClient?() },
             close: { [weak self] in self?.close() },
-            sessionChanged: { [weak self] sessionId in self?.onSessionChange?(sessionId) }
+            sessionChanged: { [weak self] sessionId in self?.onSessionChange?(sessionId) },
+            onRetrySessions: { [weak self] in self?.onRetrySessions?() }
         ))
         self.panel = panel
     }
@@ -277,6 +346,9 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     private func submit() {
         let prompt = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !model.sending else { return }
+        let existing = model.modeHint == "已有会话"
+        guard !existing || (!model.sessionsLoading && model.sessionsError == nil
+                            && model.sessions.contains(where: { $0.sessionId == model.selectedSessionId })) else { return }
         guard let onSend else {
             onMetric?(.quickPromptFailed, "bridge-unavailable")
             model.status = "Harness 提问桥尚未连接，草稿已保留。"
@@ -285,7 +357,6 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         }
         model.sending = true
         model.status = "正在发送…"
-        let existing = model.modeHint == "已有会话"
         onSend(prompt, existing ? "existing" : "new",
                existing ? model.selectedSessionId : nil,
                existing ? nil : model.newSessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in

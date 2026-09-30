@@ -71,6 +71,16 @@ struct GuardianPanel: View {
         store.candidatePluginCompatibility ?? response?.pluginCompatibility
     }
     private var checkingCandidate: Bool { store.candidatePluginCompatibility != nil }
+    private var enabledPluginIssues: [GuardianPluginIssue] {
+        pluginCompatibility?.issues.filter(\.enabled) ?? []
+    }
+    private var inactivePluginIssues: [GuardianPluginIssue] {
+        pluginCompatibility?.issues.filter { !$0.enabled } ?? []
+    }
+    private var hasPluginWarning: Bool {
+        guard let compatibility = pluginCompatibility else { return false }
+        return !compatibility.checked || !enabledPluginIssues.isEmpty
+    }
 
     private var guardianColor: Color {
         if isRecovering { return .deepseekBlue }
@@ -80,8 +90,9 @@ struct GuardianPanel: View {
 
     private var title: String {
         if isRecovering { return "正在处理" }
-        if isRunning, let compatibility = pluginCompatibility,
-           !compatibility.checked || !compatibility.issues.isEmpty { return "服务可用 · 插件需检查" }
+        if isRunning, hasPluginWarning {
+            return checkingCandidate ? "服务可用 · 候选插件需检查" : "服务可用 · 插件需检查"
+        }
         if isRunning { return response?.effectiveMode == "recovered" ? "服务已恢复" : "运行状态正常" }
         return "暂时无法连接"
     }
@@ -93,11 +104,14 @@ struct GuardianPanel: View {
             return "桌面保护组件正在检查并恢复。完成后会自动再次确认。"
         }
         if isRunning {
-            if let compatibility = pluginCompatibility, !compatibility.checked {
-                return "服务已经连接，但当前引擎无法确认插件依赖兼容性。"
+            if checkingCandidate {
+                return "候选引擎预检结果；当前运行服务仍保持原状态。"
             }
-            if let issues = pluginCompatibility?.issues, !issues.isEmpty {
-                return "服务已经连接，但有 \(issues.count) 个插件的依赖版本需要检查。请查看下方提醒。"
+            if let compatibility = pluginCompatibility, !compatibility.checked {
+                return "服务已经连接，但无法确认插件依赖兼容性。"
+            }
+            if !enabledPluginIssues.isEmpty {
+                return "服务已经连接，但有 \(enabledPluginIssues.count) 个已启用插件的依赖版本需要检查。请查看下方提醒。"
             }
             return response?.effectiveMode == "recovered"
                 ? "桌面保护组件已经把服务拉回来了，你可以继续使用。"
@@ -260,39 +274,67 @@ struct GuardianPanel: View {
     }
 
     private func pluginCompatibilityCard(_ compatibility: GuardianPluginCompatibility, candidate: Bool) -> some View {
-        card {
+        let activeIssues = compatibility.issues.filter(\.enabled)
+        let inactiveIssues = compatibility.issues.filter { !$0.enabled }
+        return card {
             VStack(alignment: .leading, spacing: 8) {
-                Label("插件兼容提醒", systemImage: "puzzlepiece.extension")
+                Label(candidate ? "候选插件兼容检查" : "插件兼容提醒", systemImage: "puzzlepiece.extension")
                     .font(.headline)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(!compatibility.checked || !activeIssues.isEmpty ? .orange : .secondary)
                 if candidate {
-                    Text("候选内核预检结果；当前运行服务仍保持原状态。")
+                    Text("这是候选引擎的预检结果，不代表当前运行服务出现故障。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !compatibility.checked {
-                    Text("当前引擎无法确认插件依赖兼容性。服务状态仍单独显示。")
+                    Text("无法确认插件依赖兼容性。服务状态仍单独显示。")
                         .font(.callout)
-                } else {
-                    Text("服务状态与插件兼容性分别检查；以下插件可能无法正常工作。桌面端不会自动停用或删除它们。")
+                }
+                if !activeIssues.isEmpty {
+                    Text("以下已启用插件的依赖版本需要检查，可能无法正常工作。桌面端不会自动停用或删除它们。")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    ForEach(compatibility.issues) { plugin in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 5) {
-                                Text(plugin.id).font(.callout.weight(.medium))
-                                Text(plugin.enabled ? "已启用" : "未启用")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            ForEach(plugin.issues) { dependency in
-                                Text("\(dependency.name)：需要 \(dependency.required)，当前 \(dependency.actual ?? "未安装")")
-                                    .font(.caption).foregroundStyle(.secondary)
+                    ForEach(activeIssues) { plugin in
+                        pluginCompatibilityDetail(plugin)
+                    }
+                }
+                if !inactiveIssues.isEmpty {
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("这些插件目前未启用，因此当前运行不受影响。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            ForEach(inactiveIssues) { plugin in
+                                pluginCompatibilityDetail(plugin)
                             }
                         }
-                        .padding(.top, 3)
+                        .padding(.top, 5)
+                    } label: {
+                        Label("未启用插件（\(inactiveIssues.count)）", systemImage: "puzzlepiece.extension")
+                            .font(.callout.weight(.medium))
                     }
+                    .accessibilityHint("展开查看未启用插件的依赖问题；这些问题目前不影响运行")
+                }
+                if compatibility.checked && activeIssues.isEmpty && inactiveIssues.isEmpty {
+                    Text("未发现插件依赖问题。")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private func pluginCompatibilityDetail(_ plugin: GuardianPluginIssue) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Text(plugin.id).font(.callout.weight(.medium))
+                Text(plugin.enabled ? "已启用" : "未启用")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            ForEach(plugin.issues) { dependency in
+                Text("\(dependency.name)：需要 \(dependency.required)，当前 \(dependency.actual ?? "未安装")")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 3)
+        .accessibilityElement(children: .combine)
     }
 
     private var timelineCard: some View {

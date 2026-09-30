@@ -7,7 +7,7 @@ struct DeepSeekHarnessApp: App {
 
     init() {
         if Bundle.main.bundleIdentifier == "com.dsh.desktop.test" {
-            let home = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".test-home").path
+            let home = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".test-home").resolvingSymlinksInPath().path
             setenv("DSH_HOME", home, 1)
             setenv("DSH_DESKTOP_TEST", "1", 1)
             setenv("DSH_WEB_HOST", "127.0.0.1", 1)
