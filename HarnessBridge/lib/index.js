@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 export const name = 'dsh-desktop-bridge'
-export const inject = ['webServer', 'agents', 'llm']
+export const inject = ['webServer', 'agents', 'sessionQuery', 'sessionController', 'llm']
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const TOKEN_FILE = join(DSH_HOME, 'desktop-bridge', 'token')
@@ -105,12 +105,10 @@ export function apply(ctx) {
     const agents = new Map()
     const running = new Set()
     const failed = new Set()
-    let latestAgent = null
     const disposers = []
 
     for (const agent of ctx.agents.list()) {
       agents.set(String(agent.id), agent)
-      latestAgent = String(agent.id)
       if (agent.status === 'running') running.add(String(agent.id))
     }
 
@@ -125,7 +123,20 @@ export function apply(ctx) {
     }
 
     route('/dsh-desktop-bridge/status', async (_request, response) => {
-      sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, desktopReachable: existsSync(TOKEN_FILE) })
+      sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, ready: true, desktopReachable: existsSync(TOKEN_FILE) })
+    })
+
+    route('/dsh-desktop-bridge/sessions', async (request, response) => {
+      if (request.method !== 'GET') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
+      if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
+      const { items } = await ctx.sessionController.list({}, new AbortController().signal)
+      const sessions = items.filter(({ origin }) => origin !== 'subagent')
+      const titles = await ctx.sessionQuery.readTitleSnapshots(sessions.map(({ sessionId }) => sessionId))
+      const titleById = new Map(titles.map((entry) => [String(entry.sessionId), entry.status === 'fulfilled' ? entry.value.title?.title : undefined]))
+      sendJson(response, 200, { ok: true, sessions: sessions.map(({ sessionId, cwd, agentAvailable }) => ({
+        sessionId: String(sessionId), title: titleById.get(String(sessionId)) || String(sessionId),
+        cwd: cwd ?? '', live: agentAvailable,
+      })) })
     })
 
     route('/dsh-desktop-bridge/models', async (request, response) => {
@@ -140,11 +151,14 @@ export function apply(ctx) {
     })
 
     route('/dsh-desktop-bridge/summary', async (request, response) => {
-      if (request.method !== 'GET') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
+      if (request.method !== 'POST') return sendJson(response, 405, { ok: false, error: 'method not allowed' })
       if (!authorized(request)) return sendJson(response, 401, { ok: false, error: 'unauthorized' })
-      const agent = latestAgent !== null ? agents.get(latestAgent) : undefined
-      if (agent === undefined) return sendJson(response, 409, { ok: false, error: 'no active Harness session' })
-      sendJson(response, 200, { ok: true, text: lastAssistantText(agent.session?.events ?? [], 20) })
+      const body = await readJsonBody(request)
+      if (body?.protocolVersion !== PROTOCOL_VERSION || typeof body?.sessionId !== 'string' || !body.sessionId) {
+        return sendJson(response, 400, { ok: false, error: 'sessionId is required' })
+      }
+      const session = await ctx.sessionQuery.readSession(body.sessionId)
+      sendJson(response, 200, { ok: true, text: lastAssistantText(session.events, 20) })
     })
 
     route('/dsh-desktop-bridge/prompt', async (request, response) => {
@@ -155,12 +169,14 @@ export function apply(ctx) {
       if (body?.protocolVersion !== PROTOCOL_VERSION || prompt.length === 0 || prompt.length > 32_000) {
         return sendJson(response, 400, { ok: false, error: 'invalid prompt' })
       }
-      const currentAgent = latestAgent !== null ? agents.get(latestAgent) : undefined
-
-      // 新会话：独立创建一个 agent（默认继承当前会话的工作目录）。
-      // 仅显式 new 才新开；旧客户端不传 mode，保持「已有会话」原行为。
+      // A new session always uses the directory explicitly chosen in the panel.
       if (body?.mode === 'new') {
-        const cwd = currentAgent?.session?.header?.cwd ?? currentAgent?.session?.cwd
+        const cwd = typeof body?.cwd === 'string' ? body.cwd.trim() : ''
+        let directoryExists = false
+        try { directoryExists = isAbsolute(cwd) && statSync(cwd).isDirectory() } catch {}
+        if (!directoryExists) {
+          return sendJson(response, 400, { ok: false, error: 'an existing absolute working directory is required' })
+        }
         const fallback = (() => { try { return ctx.agentDefaultModel?.currentSelection?.() ?? null } catch { return null } })()
         const provider = typeof body?.provider === 'string' && body.provider ? body.provider : (fallback?.provider ?? undefined)
         const model = typeof body?.model === 'string' && body.model ? body.model : (fallback?.model ?? undefined)
@@ -169,7 +185,7 @@ export function apply(ctx) {
         const handle = await ctx.agents.create({
           sessionId: randomUUID(),
           agentOptions: hasModel ? { provider, model } : undefined,
-          meta: cwd ? { cwd } : undefined,
+          meta: { cwd },
           // 力度通过 agent 作用域的 agent/request 瀑布覆盖（profile 插件不能 import 引擎核心包）。
           setup: effort ? (agentCtx) => {
             agentCtx.on('agent/request', async (_payload, next) => {
@@ -182,10 +198,17 @@ export function apply(ctx) {
         return sendJson(response, 202, { ok: true, sessionId: String(handle.agent.id), mode: 'new' })
       }
 
-      // 已有会话：延续当前活动会话。
-      if (currentAgent === undefined) return sendJson(response, 409, { ok: false, error: 'no active Harness session' })
-      currentAgent.followup(userMessage(prompt))
-      sendJson(response, 202, { ok: true, sessionId: String(currentAgent.id), mode: 'existing' })
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) return sendJson(response, 400, { ok: false, error: 'sessionId is required' })
+      const records = await ctx.sessionQuery.listSessions()
+      if (!records.some(({ header }) => String(header.id) === sessionId)) {
+        return sendJson(response, 409, { ok: false, error: 'selected Harness session no longer exists' })
+      }
+      const resolved = await ctx.sessionController.resolveAgent(sessionId)
+      if (resolved.error) return sendJson(response, 409, { ok: false, error: resolved.error.message })
+      const { agent } = resolved
+      agent.followup(userMessage(prompt))
+      sendJson(response, 202, { ok: true, sessionId, mode: 'existing' })
     })
 
     route('/dsh-desktop-bridge/approval', async (request, response) => {
@@ -204,16 +227,13 @@ export function apply(ctx) {
 
     disposers.push(ctx.on('agent/created', ({ agent }) => {
       agents.set(String(agent.id), agent)
-      latestAgent = String(agent.id)
     }))
     disposers.push(ctx.on('agent/disposed', ({ agent }) => {
       const id = String(agent.id)
       agents.delete(id); running.delete(id); failed.delete(id)
-      if (latestAgent === id) latestAgent = [...agents.keys()].at(-1) ?? null
     }))
     disposers.push(ctx.on('agent/status', ({ agent, status }) => {
       const sessionId = String(agent.id)
-      latestAgent = sessionId
       if (status === 'running') {
         running.add(sessionId); failed.delete(sessionId)
         void postDesktop({ id: `task-started-${randomUUID()}`, type: 'task.started', title: '任务已开始', message: 'Harness 正在处理任务。', sessionId })

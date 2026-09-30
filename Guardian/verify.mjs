@@ -1,11 +1,93 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import {
-  appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync,
+  appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
   symlinkSync, writeFileSync,
 } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+function verifyUpdateDowngradeGuard() {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-guardian-update-'))
+  const profile = join(home, 'profiles', 'web')
+  const modules = join(profile, 'node_modules', '@deepseek-ai')
+  const current = join(modules, 'dsh')
+  const sessions = join(home, 'sessions')
+  const fakeBin = join(home, 'fake-bin')
+  const preflightMarker = join(home, 'preflight-ran')
+  const startMarker = join(home, 'start-ran')
+  mkdirSync(join(current, 'lib'), { recursive: true })
+  mkdirSync(join(modules, 'dsh-session', 'lib'), { recursive: true })
+  mkdirSync(join(profile, 'node_modules', '.bin'), { recursive: true })
+  mkdirSync(sessions, { recursive: true })
+  mkdirSync(fakeBin, { recursive: true })
+  writeFileSync(join(current, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '2.0.0' }))
+  writeFileSync(join(modules, 'dsh-session', 'lib', 'index.js'), 'export const SESSION_FORMAT_VERSION = 4\n')
+  writeFileSync(join(current, 'lib', 'bin.js'), `#!/usr/bin/env node\nprocess.stdout.write('  - id: session-persistence-jsonl\\n    root: "${sessions}"\\n')\n`)
+  symlinkSync(join(current, 'lib', 'bin.js'), join(profile, 'node_modules', '.bin', 'dsh'))
+  writeFileSync(join(profile, 'package.json'), JSON.stringify({ name: 'update-guard-profile', dsh: { profile: { bundles: ['@deepseek-ai/dsh'] } } }))
+  writeFileSync(join(profile, 'cordis.yml'), '[]\n')
+  writeFileSync(join(profile, 'cordis.patch.yml'), '[]\n')
+  writeFileSync(join(sessions, 'session.v4.jsonl'), '{}\n')
+  const currentBin = join(current, 'lib', 'bin.js')
+  const oldBin = join(home, 'guardian', 'engines', '1.9.0', 'dsh')
+  mkdirSync(dirname(oldBin), { recursive: true })
+  writeFileSync(oldBin, '')
+  const selectionPath = join(home, 'guardian', 'engine.json')
+  const originalSelection = JSON.stringify({
+    active: currentBin, version: '2.0.0', channel: 'latest',
+    history: [{ active: oldBin, version: '1.9.0', channel: 'latest' }],
+  })
+  writeFileSync(selectionPath, `${originalSelection}\n`)
+  const npmPath = join(fakeBin, 'npm')
+  writeFileSync(npmPath, `#!/usr/bin/env node
+const fs = require('node:fs')
+const path = require('node:path')
+const prefix = process.argv[process.argv.indexOf('--prefix') + 1]
+const modules = path.join(prefix, 'node_modules', '@deepseek-ai')
+const pkg = path.join(modules, 'dsh')
+fs.mkdirSync(path.join(pkg, 'lib'), { recursive: true })
+fs.mkdirSync(path.join(modules, 'dsh-session', 'lib'), { recursive: true })
+fs.mkdirSync(path.join(prefix, 'node_modules', '.bin'), { recursive: true })
+fs.writeFileSync(path.join(modules, 'dsh-session', 'package.json'), JSON.stringify({ type: 'module' }))
+fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '1.0.0' }))
+fs.writeFileSync(path.join(modules, 'dsh-session', 'lib', 'index.js'), 'export const SESSION_FORMAT_VERSION = 3\\n')
+fs.writeFileSync(path.join(pkg, 'lib', 'bin.js'), '#!/usr/bin/env node\\nconst fs = require("node:fs")\\nif (process.argv.includes("--dump-config")) fs.writeFileSync(process.env.DSH_TEST_PREFLIGHT_MARKER, "ran")\\nelse fs.writeFileSync(process.env.DSH_TEST_START_MARKER, "ran")\\n')
+fs.chmodSync(path.join(pkg, 'lib', 'bin.js'), 0o755)
+fs.symlinkSync(path.join(pkg, 'lib', 'bin.js'), path.join(prefix, 'node_modules', '.bin', 'dsh'))
+`)
+  chmodSync(npmPath, 0o755)
+  try {
+    const result = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'guardian.mjs'), 'update', '--version', '1.0.0', '--json'], {
+      encoding: 'utf8', env: {
+        ...process.env,
+        DSH_HOME: home,
+        DSH_TEST_PREFLIGHT_MARKER: preflightMarker,
+        DSH_TEST_START_MARKER: startMarker,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
+    })
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    const outcome = JSON.parse(result.stdout)
+    assert.equal(outcome.ok, false)
+    assert.equal(outcome.stage, 'session-compatibility')
+    assert.equal(outcome.rollbackCompatibility.targetFormat, 3, JSON.stringify(outcome))
+    assert.deepEqual(outcome.rollbackCompatibility.newerFormats, [4])
+    assert.match(outcome.error, /Session V4/)
+    assert.equal(readFileSync(selectionPath, 'utf8'), `${originalSelection}\n`)
+    assert.equal(existsSync(preflightMarker), false)
+    assert.equal(existsSync(startMarker), false)
+    assert.deepEqual(readdirSync(join(home, 'guardian', 'engines')).filter((name) => name.startsWith('1.0.0-')), [])
+    assert.equal(existsSync(oldBin), true)
+    const progress = JSON.parse(readFileSync(join(home, 'guardian', 'update.json'), 'utf8'))
+    assert.equal(progress.phase, 'failed')
+    assert.match(progress.message, /Session V4/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
 
 const root = mkdtempSync(join(tmpdir(), 'dsh-guardian-verify-'))
 process.env.DSH_HOME = root
@@ -15,8 +97,12 @@ const integration = join(profile, 'node_modules', 'test-integration')
 const dshPackage = join(profile, 'node_modules', '@deepseek-ai', 'dsh')
 mkdirSync(join(profile, 'node_modules', '.bin'), { recursive: true })
 mkdirSync(join(dshPackage, 'lib'), { recursive: true })
+mkdirSync(join(dshPackage, 'node_modules', 'semver'), { recursive: true })
+mkdirSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis'), { recursive: true })
 mkdirSync(integration, { recursive: true })
 writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: 'test' }))
+writeFileSync(join(dshPackage, 'node_modules', 'semver', 'index.js'), 'exports.satisfies = (version, range) => range === version || range === `^${version}`\n')
+writeFileSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis', version: '4.0.0' }))
 writeFileSync(join(dshPackage, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
 symlinkSync(join(dshPackage, 'lib', 'bin.js'), join(profile, 'node_modules', '.bin', 'dsh'))
 writeFileSync(join(profile, 'package.json'), JSON.stringify({
@@ -27,16 +113,24 @@ writeFileSync(join(profile, 'cordis.yml'), '[]\n')
 writeFileSync(join(profile, 'cordis.patch.yml'), '[]\n')
 writeFileSync(join(integration, 'package.json'), JSON.stringify({
   name: 'test-integration',
-  dsh: { guardian: {
+  peerDependencies: { '@deepseek-ai/cordis': '^4.0.2' },
+  dsh: { bundle: true, guardian: {
     protocolVersion: 1,
     healthPath: '/test/status',
     snapshotLinkedBundle: true,
     profileFiles: ['.test-settings.json'],
   } },
 }, null, 2))
+const inactivePlugin = join(profile, 'node_modules', 'inactive-integration')
+mkdirSync(inactivePlugin, { recursive: true })
+writeFileSync(join(inactivePlugin, 'package.json'), JSON.stringify({
+  name: 'inactive-integration', version: '1.0.0',
+  peerDependencies: { '@deepseek-ai/cordis': '^4.0.2' }, dsh: { client: true },
+}))
 writeFileSync(join(integration, 'marker.txt'), 'golden\n')
 
 try {
+  verifyUpdateDowngradeGuard()
   const guardian = await import(`./guardian.mjs?verify=${Date.now()}`)
   const boot = { rev: 'test', entries: [{ id: 'entry', url: '/entry.js' }] }
   assert.deepEqual(guardian.bootManifest(`<head><script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script></head>`), boot)
@@ -130,6 +224,47 @@ try {
   assert.equal(integrations[0].id, 'test-integration')
   assert.equal(integrations[0].healthPath, '/test/status')
   assert.equal(guardian.validateProfileFiles().ok, true)
+  const compatibility = guardian.pluginCompatibility(profile, join(dshPackage, 'lib', 'bin.js'))
+  assert.equal(compatibility.checked, true)
+  assert.equal(compatibility.issues.length, 2)
+  assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.enabled, true)
+  assert.equal(compatibility.issues.find((item) => item.id === 'inactive-integration')?.enabled, false)
+  assert.equal(compatibility.issues[0].issues[0].actual, '4.0.0')
+  const blockedPreflight = await guardian.preflight({ smoke: false, enforcePluginCompatibility: true })
+  assert.equal(blockedPreflight.ok, false)
+  assert.equal(blockedPreflight.stage, 'plugin-compatibility')
+  assert.match(blockedPreflight.issues[0], /需要 \^4\.0\.2，当前 4\.0\.0/)
+  writeFileSync(join(profile, 'package.json'), JSON.stringify({ name: 'guardian-test-profile', dsh: { profile: { bundles: ['@deepseek-ai/dsh'] } } }))
+  const inactivePreflight = await guardian.preflight({ smoke: false, enforcePluginCompatibility: true })
+  assert.equal(inactivePreflight.ok, true)
+  assert.equal(inactivePreflight.pluginCompatibility.issues.find((item) => item.id === 'inactive-integration')?.enabled, false)
+  writeFileSync(join(profile, 'package.json'), JSON.stringify({
+    name: 'guardian-test-profile', dsh: { profile: { bundles: ['@deepseek-ai/dsh', 'test-integration'] } },
+  }, null, 2))
+  const sessionRoot = join(root, 'sessions')
+  mkdirSync(join(sessionRoot, 'project'), { recursive: true })
+  writeFileSync(join(sessionRoot, 'project', 'session.v4.jsonl'), '{}\n')
+  const rollback = guardian.sessionRollbackCompatibility(join(dshPackage, 'lib', 'bin.js'), sessionRoot, {
+    currentFormat: 4, targetFormat: 3,
+  })
+  assert.equal(rollback.safe, false)
+  assert.deepEqual(rollback.newerFormats, [4])
+  assert.equal(guardian.sessionRollbackCompatibility(join(dshPackage, 'lib', 'bin.js'), sessionRoot, {
+    currentFormat: null, targetFormat: 3,
+  }).safe, false)
+  rmSync(join(sessionRoot, 'project', 'session.v4.jsonl'))
+  writeFileSync(join(sessionRoot, 'project', 'session.v3.jsonl'), '{}\n')
+  writeFileSync(join(sessionRoot, 'project', 'session.v2.jsonl'), '{}\n')
+  assert.equal(guardian.sessionRollbackCompatibility(join(dshPackage, 'lib', 'bin.js'), sessionRoot, {
+    currentFormat: 3, targetFormat: 3,
+  }).safe, true)
+  symlinkSync(profile, join(sessionRoot, 'linked-project'))
+  assert.equal(guardian.sessionRollbackCompatibility(join(dshPackage, 'lib', 'bin.js'), sessionRoot, {
+    currentFormat: 3, targetFormat: 3,
+  }).safe, false)
+  assert.equal(guardian.sessionRollbackCompatibility(join(dshPackage, 'lib', 'bin.js'), null, {
+    currentFormat: 3, targetFormat: 3,
+  }).safe, false)
   mkdirSync(join(root, 'deployments'), { recursive: true })
   const scratch = guardian.makeScratch()
   assert.equal(lstatSync(join(scratch.scratchProfile, 'node_modules')).isSymbolicLink(), false)

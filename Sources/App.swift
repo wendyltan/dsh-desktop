@@ -3,10 +3,23 @@ import AppKit
 
 @main
 struct DeepSeekHarnessApp: App {
-    @StateObject private var store = AppStore()
+    @StateObject private var store: AppStore
+
+    init() {
+        if Bundle.main.bundleIdentifier == "com.dsh.desktop.test" {
+            let home = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".test-home").path
+            setenv("DSH_HOME", home, 1)
+            setenv("DSH_DESKTOP_TEST", "1", 1)
+            setenv("DSH_WEB_HOST", "127.0.0.1", 1)
+            setenv("DSH_WEB_PORT", "13080", 1)
+            setenv("DSH_DESKTOP_BRIDGE_PORT", "13091", 1)
+            setenv("DSH_DESKTOP_BRIDGE_URL", "http://127.0.0.1:13091", 1)
+        }
+        _store = StateObject(wrappedValue: AppStore())
+    }
 
     var body: some Scene {
-        WindowGroup("DeepSeek Harness") {
+        WindowGroup(ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" ? "DeepSeek Harness Test" : "DeepSeek Harness") {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 980, minHeight: 640)
@@ -33,6 +46,13 @@ struct DeepSeekHarnessApp: App {
                     .keyboardShortcut(",", modifiers: .command)
             }
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .toolbar) {
+                if ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" {
+                    Button("快速提问…") { store.showQuickPrompt() }
+                    Button("当前状态…") { store.showGuardianPanel() }
+                    Button("发送会话导航测试通知") { store.sendNavigationTestNotification() }
+                }
+            }
         }
 
     }
@@ -48,6 +68,15 @@ struct ContentView: View {
             WebView(
                 url: ServerManager.clientURL,
                 reloadToken: store.reloadToken,
+                sessionToOpen: store.pendingSessionId,
+                onSessionOpened: {
+                    store.pendingSessionId = nil
+                    store.nativeActionMessage = ""
+                },
+                onSessionOpenFailed: { error in
+                    store.pendingSessionId = nil
+                    store.nativeActionMessage = error
+                },
                 loadState: $pageState
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -63,6 +92,23 @@ struct ContentView: View {
             }
 
             VStack {
+                if !store.nativeActionMessage.isEmpty {
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(store.nativeActionMessage)
+                            .font(.callout)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button { store.nativeActionMessage = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("关闭提示")
+                    }
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                }
                 if store.updateBusy {
                     EngineUpdateProgressView(
                         message: store.updateMessage,

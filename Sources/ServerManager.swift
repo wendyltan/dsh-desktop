@@ -6,7 +6,7 @@ enum ServerManager {
     static let host = ProcessInfo.processInfo.environment["DSH_WEB_HOST"] ?? "127.0.0.1"
     static let port = Int(ProcessInfo.processInfo.environment["DSH_WEB_PORT"] ?? "3080") ?? 3080
     static var url: String { "http://\(host):\(port)/" }
-    static var webAccessURLFile: String { "\(home)/.dsh/guardian/web-access-url" }
+    static var webAccessURLFile: String { "\(dshHomePath)/guardian/web-access-url" }
 
     static func validatedClientURL(_ candidate: String?, baseURL: String = url) -> URL {
         guard let fallback = URL(string: baseURL),
@@ -36,9 +36,9 @@ enum ServerManager {
             : target.scheme?.lowercased() == "https" ? 443 : nil)
     }
 
-    static var launchScript: String { "\(home)/.dsh/dsh-desktop/launch.sh" }
-    static var stopScript: String { "\(home)/.dsh/dsh-desktop/stop.sh" }
-    static var logFile: String { "\(home)/.dsh/logs/dsh-web.log" }
+    static var launchScript: String { "\(dshHomePath)/dsh-desktop/launch.sh" }
+    static var stopScript: String { "\(dshHomePath)/dsh-desktop/stop.sh" }
+    static var logFile: String { "\(dshHomePath)/logs/dsh-web.log" }
 
     /// 用 URLSession 探测本机服务是否响应（替代 curl）。
     /// 与 curl「连上即算 up」一致：任何 HTTP 响应都视为运行中，仅网络错误/超时视为停止。

@@ -13,7 +13,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         static let information = "DSH_INFORMATION"
     }
 
-    var onOpenClient: (() -> Void)?
+    var onOpenSession: ((String?) -> Void)?
     var onActionResult: ((String) -> Void)?
     var onMetric: ((NativeMetric, String?) -> Void)?
     var callbackToken: String?
@@ -89,7 +89,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
             if response.notification.request.content.categoryIdentifier == Category.approval {
                 answer(response, outcome: "defer-to-web", openAfter: true)
             } else {
-                DispatchQueue.main.async { [weak self] in self?.onOpenClient?() }
+                openSession(for: response)
             }
         default: break
         }
@@ -103,8 +103,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
               let eventId = info["eventId"] as? String else {
             DispatchQueue.main.async { [weak self] in
                 self?.onMetric?(.approvalFailed, "invalid-callback")
+                self?.onOpenSession?(Self.sessionId(from: info))
                 self?.onActionResult?("审批回调不可用，已打开客户端供你处理。")
-                self?.onOpenClient?()
             }
             return
         }
@@ -125,15 +125,28 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                     self?.onMetric?(.approvalSucceeded, outcome)
                     if outcome == "defer-to-web" { self?.onMetric?(.approvalDeferredToWeb, "user-opened-task") }
                     let message = outcome == "allowed-once" ? "已允许一次。" : (outcome == "rejected" ? "已拒绝。" : "已转到客户端处理。")
+                    if openAfter { self?.onOpenSession?(Self.sessionId(from: info)) }
                     self?.onActionResult?(message)
-                    if openAfter { self?.onOpenClient?() }
                 }
                 else {
                     self?.onMetric?(.approvalFailed, error == nil ? "http-rejected" : "network-error")
+                    self?.onOpenSession?(Self.sessionId(from: info))
                     self?.onActionResult?("审批未送达，仍保持待处理状态。")
-                    self?.onOpenClient?()
                 }
             }
         }.resume()
+    }
+
+    private func openSession(for response: UNNotificationResponse) {
+        let sessionId = Self.sessionId(from: response.notification.request.content.userInfo)
+        DispatchQueue.main.async { [weak self] in self?.onOpenSession?(sessionId) }
+    }
+
+    static func sessionId(from userInfo: [AnyHashable: Any]) -> String? {
+        guard let sessionId = userInfo["sessionId"] as? String,
+              !sessionId.isEmpty,
+              sessionId.count <= 256,
+              !sessionId.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
+        return sessionId
     }
 }

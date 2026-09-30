@@ -20,9 +20,22 @@ struct BridgeModel: Decodable, Identifiable {
     var id: String { "\(provider):\(model)" }
 }
 
+struct BridgeSession: Decodable, Identifiable {
+    let sessionId: String
+    let title: String
+    let cwd: String
+    let live: Bool
+    var id: String { sessionId }
+}
+
 private struct ModelsResponse: Decodable {
     let ok: Bool
     let models: [BridgeModel]
+}
+
+private struct SessionsResponse: Decodable {
+    let ok: Bool
+    let sessions: [BridgeSession]
 }
 
 private struct SummaryResponse: Decodable {
@@ -49,7 +62,7 @@ enum EventBridgeError: LocalizedError {
 /// its official protocol to this narrow local contract.
 final class EventBridge {
     static let protocolVersion = 1
-    static let port: UInt16 = 3091
+    static let port: UInt16 = UInt16(ProcessInfo.processInfo.environment["DSH_DESKTOP_BRIDGE_PORT"] ?? "3091") ?? 3091
     static let supportedTypes: Set<String> = [
         "bridge.connected", "task.started", "task.progress",
         "approval.requested", "task.completed", "task.failed",
@@ -60,6 +73,12 @@ final class EventBridge {
     private var listener: NWListener?
     private var seen: [String: Date] = [:]
     private var promptEndpoint: URL?
+    private var endpointReady = false
+    private var listenerReady = false
+    private var endpointGeneration = 0
+    private var healthCheckGeneration = 0
+    private var listenerGeneration = 0
+    private var endpointHealthTimer: DispatchSourceTimer?
     private var onEvent: ((DesktopBridgeEvent) -> Void)?
     private var onState: ((String) -> Void)?
     private var approvalAllowed: (() -> Bool)?
@@ -98,28 +117,43 @@ final class EventBridge {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: Self.port)!)
         let listener = try NWListener(using: parameters)
+        listenerGeneration += 1
+        let generation = listenerGeneration
         listener.stateUpdateHandler = { [weak self] state in
-            let text: String
+            guard let self, self.listenerGeneration == generation else { return }
             switch state {
-            case .ready: text = "事件桥已连接 · 127.0.0.1:\(Self.port)"
-            case .failed(let error): text = "事件桥失败：\(error.localizedDescription)"
-            case .waiting(let error): text = "事件桥等待中：\(error.localizedDescription)"
-            case .cancelled: text = "事件桥已停止"
+            case .ready: self.listenerReady = true
+            case .failed, .cancelled: self.listenerReady = false
+            case .waiting: self.listenerReady = false
             default: return
             }
-            DispatchQueue.main.async { self?.onState?(text) }
+            self.publishState()
         }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         self.listener = listener
         listener.start(queue: queue)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 5)
+        timer.setEventHandler { [weak self] in self?.checkPromptEndpoint() }
+        endpointHealthTimer = timer
+        timer.resume()
     }
 
     func stop() {
+        listenerGeneration += 1
+        endpointGeneration += 1
+        healthCheckGeneration += 1
+        endpointHealthTimer?.cancel()
+        endpointHealthTimer = nil
+        endpointReady = false
+        promptEndpoint = nil
+        listenerReady = false
         listener?.cancel()
         listener = nil
+        publishState()
     }
 
-    func sendPrompt(_ prompt: String, mode: String, provider: String?, model: String?, effort: String?,
+    func sendPrompt(_ prompt: String, mode: String, sessionId: String?, cwd: String?, provider: String?, model: String?, effort: String?,
                     completion: @escaping (Result<Void, Error>) -> Void) {
         queue.async { [weak self] in
             guard let endpoint = self?.promptEndpoint else {
@@ -133,6 +167,8 @@ final class EventBridge {
                 "prompt": prompt,
                 "mode": mode,
             ]
+            if let sessionId, !sessionId.isEmpty { body["sessionId"] = sessionId }
+            if let cwd, !cwd.isEmpty { body["cwd"] = cwd }
             if let provider, !provider.isEmpty { body["provider"] = provider }
             if let model, !model.isEmpty { body["model"] = model }
             if let effort, !effort.isEmpty { body["effort"] = effort }
@@ -157,6 +193,7 @@ final class EventBridge {
                 } else {
                     result = .failure(EventBridgeError.invalidResponse)
                 }
+                if error != nil { self?.queue.async { self?.endpointReady = false; self?.publishState() } }
                 DispatchQueue.main.async { completion(result) }
             }.resume()
         }
@@ -190,8 +227,30 @@ final class EventBridge {
         }
     }
 
+    func fetchSessions(completion: @escaping (Result<[BridgeSession], Error>) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let base = self.promptEndpoint?.deletingLastPathComponent() else {
+                DispatchQueue.main.async { completion(.failure(EventBridgeError.unavailable("Harness 尚未连接，无法读取会话列表。"))) }
+                return
+            }
+            var request = URLRequest(url: base.appendingPathComponent("sessions"))
+            request.timeoutInterval = 10
+            request.setValue("Bearer \(self.token)", forHTTPHeaderField: "Authorization")
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let result: Result<[BridgeSession], Error>
+                if let error { result = .failure(error) }
+                else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    result = .failure(EventBridgeError.invalidResponse)
+                } else if let data, let decoded = try? JSONDecoder().decode(SessionsResponse.self, from: data), decoded.ok {
+                    result = .success(decoded.sessions)
+                } else { result = .failure(EventBridgeError.invalidResponse) }
+                DispatchQueue.main.async { completion(result) }
+            }.resume()
+        }
+    }
+
     /// 读取最近一次会话的摘要（最后 N 行结果）。
-    func fetchSummary(completion: @escaping (Result<String, Error>) -> Void) {
+    func fetchSummary(sessionId: String, completion: @escaping (Result<String, Error>) -> Void) {
         queue.async { [weak self] in
             guard let self, let base = self.promptEndpoint?.deletingLastPathComponent() else {
                 DispatchQueue.main.async {
@@ -200,8 +259,11 @@ final class EventBridge {
                 return
             }
             var request = URLRequest(url: base.appendingPathComponent("summary"))
+            request.httpMethod = "POST"
             request.timeoutInterval = 10
             request.setValue("Bearer \(self.token)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["protocolVersion": Self.protocolVersion, "sessionId": sessionId])
             URLSession.shared.dataTask(with: request) { data, response, error in
                 let result: Result<String, Error>
                 if let error {
@@ -228,6 +290,38 @@ final class EventBridge {
               url.host == "127.0.0.1" || url.host == "localhost",
               url.user == nil, url.password == nil else { return nil }
         return url
+    }
+
+    private func checkPromptEndpoint() {
+        guard let endpoint = promptEndpoint else { endpointReady = false; publishState(); return }
+        healthCheckGeneration += 1
+        let endpointGeneration = self.endpointGeneration
+        let healthCheckGeneration = self.healthCheckGeneration
+        var request = URLRequest(url: endpoint.deletingLastPathComponent().appendingPathComponent("status"))
+        request.timeoutInterval = 3
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+            let status = response as? HTTPURLResponse
+            let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let ready = error == nil && status?.statusCode == 200
+                && (payload?["ok"] as? Bool) == true
+                && (payload?["ready"] as? Bool) == true
+                && (payload?["protocolVersion"] as? Int) == Self.protocolVersion
+            self.queue.async {
+                guard self.endpointGeneration == endpointGeneration,
+                      self.healthCheckGeneration == healthCheckGeneration else { return }
+                self.endpointReady = ready
+                self.publishState()
+            }
+        }.resume()
+    }
+
+    private func publishState() {
+        let text: String
+        if listenerReady && endpointReady { text = "事件桥已连接 · 127.0.0.1:\(Self.port)" }
+        else if !listenerReady { text = "事件桥尚未就绪 · 127.0.0.1:\(Self.port)" }
+        else { text = "等待 Harness 提问端点" }
+        DispatchQueue.main.async { [weak self] in self?.onState?(text) }
     }
 
     private func accept(_ connection: NWConnection) {
@@ -291,7 +385,7 @@ final class EventBridge {
         if request.method == "GET" && request.path == "/v1/status" {
             respond(connection, status: 200, body: [
                 "ok": true, "protocolVersion": Self.protocolVersion,
-                "promptConnected": promptEndpoint != nil,
+                "promptConnected": listenerReady && endpointReady,
             ])
             return
         }
@@ -327,6 +421,10 @@ final class EventBridge {
                 return
             }
             promptEndpoint = prompt
+            endpointGeneration += 1
+            healthCheckGeneration += 1
+            endpointReady = false
+            checkPromptEndpoint()
         }
         seen[event.id] = now
         DispatchQueue.main.async { [weak self] in self?.onEvent?(event) }

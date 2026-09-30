@@ -41,6 +41,7 @@ try {
   assert.equal(installed.dependencies['dsh-desktop-bridge'].startsWith('link:'), true)
   const live = join(profile, 'node_modules', 'dsh-desktop-bridge')
   assert.equal(existsSync(join(readlinkSync(live), 'lib', 'index.js')), true)
+  assert.equal(existsSync(join(readlinkSync(live), 'client', 'client.js')), true)
 
   const beforeFailure = readFileSync(join(profile, 'package.json'), 'utf8')
   const beforeLink = readlinkSync(live)

@@ -20,10 +20,32 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/UpdateChecker.swift Sources/GuardianService.swift \
   Sources/ServerManager.swift Sources/Utils.swift \
   Tests/UpdateCheckerTests.swift -o bin/updatechecker-tests
-"$ROOT/bin/updatechecker-tests"
+DSH_HOME="$ROOT/bin/verification-home" "$ROOT/bin/updatechecker-tests"
+
+echo "== DeepSeek 凭据读取单测 =="
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
+  Sources/Models.swift Sources/Utils.swift Sources/BalanceService.swift \
+  Tests/BalanceServiceTests.swift -o bin/balance-tests
+BALANCE_TEST_HOME="$(mktemp -d)"
+DSH_HOME="$BALANCE_TEST_HOME" "$ROOT/bin/balance-tests"
+rmdir "$BALANCE_TEST_HOME"
+
+echo "== Harness 桥接验证 =="
+node HarnessBridge/verify.mjs
+node --test HarnessBridge/test/client-navigation.test.mjs
+node Scripts/verify-install-bridge.mjs
+
+echo "== 原生事件桥验证 =="
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
+  Sources/EventBridge.swift Bridge/Verify.swift -framework Network -o bin/bridge-tests
+DSH_DESKTOP_BRIDGE_PORT=13991 "$ROOT/bin/bridge-tests"
 
 echo "== Guardian 集成验证 =="
 node Guardian/verify.mjs
+if [ "${1:-}" = "--installed-engines" ]; then
+  echo "== 已安装内核的真实跨版本兼容验收 =="
+  node Scripts/verify-session-compatibility.mjs
+fi
 
 echo "== git 白空格检查 =="
 git diff --check

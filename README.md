@@ -97,6 +97,35 @@ dsh plugin --profile web add dsh-ops-console
 
 ## 开发与验证
 
+### 隔离测试版
+
+在测试分支的独立工作目录中运行：
+
+```bash
+./build.sh --test
+node Scripts/prepare-test-environment.mjs
+./Scripts/verify.sh --installed-engines
+open "DeepSeek Harness Test.app"
+```
+
+测试版使用独立的应用标识、`.test-home` 数据目录、13080 网页端口和 13091 桥接端口。准备脚本复制当前安装的引擎，建立只包含官方基础功能和桌面桥的空白 profile；不复制正式密钥、聊天或第三方插件，不安装 LaunchAgent，也不替换 `/Applications` 中的正式应用。测试版在没有余额凭据时不自动查询余额，不自动检查更新或注册全局快捷键，可从自己的菜单打开快速提问。经授权配置测试凭据后，余额查询会正常运行。
+
+修改代码后重新运行 `./build.sh --test` 和 `node Scripts/prepare-test-environment.mjs --refresh`。后者只刷新测试组件，不覆盖测试数据；桥接代码更新后需重启测试服务。已有 `.test-home` 不会被初始化脚本自动覆盖。初始测试环境没有模型凭据，目测界面不需要发送付费模型请求。
+
+可选运行 `node Scripts/prepare-visual-session-samples.mjs`，生成两条 V3/V4 中文会话和一个未启用的插件兼容性样本，仅写入测试目录。测试版窗口的 View 菜单提供“快速提问”和“当前状态”。
+
+测试通知导航：在快速提问里选定目标会话，然后切换主窗口到另一条会话，从 View 菜单点“发送会话导航测试通知”。点击 macOS 右上角通知或通知中心里的该通知，主窗口应切换到目标会话。这个测试不发送模型请求；系统通知未授权时会显示失败提示。
+
+原生网页行为可单独验收：运行 `zsh Scripts/build-webview-smoke.sh` 和 `node Scripts/webview-smoke-server.mjs`，再打开 `.test-home/WebView Smoke.app`。页面提供同源新窗口、Blob 下载、文件选择及会话定位回执测试；文件选择不会上传。结束后退出测试窗口，并在服务终端按 Ctrl-C。
+
+测试服务可单独停止：
+
+```bash
+DSH_HOME="$PWD/.test-home" DSH_WEB_PORT=13080 node .test-home/guardian/guardian.mjs stop --json
+```
+
+正式安装仍使用以下命令；验收测试分支时不要运行不带 `--test` 的构建。
+
 ```bash
 ./build.sh
 ./Scripts/verify.sh

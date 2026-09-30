@@ -44,7 +44,7 @@ mkdirSync(BACKUPS, { recursive: true })
 const candidate = join(DEPLOY_ROOT, `.candidate-${stamp}`)
 rmSync(candidate, { recursive: true, force: true })
 mkdirSync(candidate, { recursive: true })
-for (const item of ['package.json', 'cordis.patch.yml', 'lib']) cpSync(join(SOURCE, item), join(candidate, item), { recursive: true })
+for (const item of ['package.json', 'cordis.patch.yml', 'client', 'lib']) cpSync(join(SOURCE, item), join(candidate, item), { recursive: true })
 
 let backup = null
 if (existsSync(CURRENT)) {

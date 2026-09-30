@@ -62,6 +62,25 @@ struct GuardianEngineVersion: Decodable, Identifiable {
     var id: String { version }
 }
 
+struct GuardianPluginIssue: Decodable, Identifiable {
+    struct Dependency: Decodable, Identifiable {
+        let name: String
+        let required: String
+        let actual: String?
+        var id: String { name }
+    }
+
+    let id: String
+    let version: String?
+    let enabled: Bool
+    let issues: [Dependency]
+}
+
+struct GuardianPluginCompatibility: Decodable {
+    let checked: Bool
+    let issues: [GuardianPluginIssue]
+}
+
 struct GuardianRecoverySnapshot: Decodable, Identifiable {
     let id: String
     let createdAt: String?
@@ -88,6 +107,7 @@ struct GuardianResponse: Decodable {
     let engineChannel: String?
     let integrations: [GuardianIntegrationState]?
     let live: GuardianLiveState?
+    var pluginCompatibility: GuardianPluginCompatibility?
     let stage: String?
     let issues: [String]?
     let action: String?
@@ -105,6 +125,11 @@ struct GuardianResponse: Decodable {
     let engineHistory: [GuardianEngineVersion]?
     let recoverySnapshots: [GuardianRecoverySnapshot]?
     let recentEvents: [GuardianEvent]?
+
+    mutating func retainPluginCompatibility(from previous: GuardianResponse?) {
+        guard pluginCompatibility == nil, let engine, engine == previous?.engine else { return }
+        pluginCompatibility = previous?.pluginCompatibility
+    }
 
     var effectiveMode: String { mode ?? state?.mode ?? "unknown" }
     var displayError: String? {
@@ -142,15 +167,14 @@ struct GuardianDiffResponse: Decodable {
 }
 
 enum GuardianService {
-    static let home = FileManager.default.homeDirectoryForCurrentUser.path
-    static let executable = "\(home)/.dsh/guardian/guardian.mjs"
+    static let executable = "\(dshHomePath)/guardian/guardian.mjs"
     /// guardian 落盘的状态/进度文件（与 guardian.mjs 常量对齐，纯只读）。
-    static let stateFile = "\(home)/.dsh/guardian/state.json"
-    static let operationFile = "\(home)/.dsh/guardian/operation.json"
-    static let updateFile = "\(home)/.dsh/guardian/update.json"
-    static let lastKnownGoodPath = "\(home)/.dsh/guardian/last-known-good"
-    static let engineStateFile = "\(home)/.dsh/guardian/engine.json"
-    static let eventsFile = "\(home)/.dsh/guardian/events.log"
+    static let stateFile = "\(dshHomePath)/guardian/state.json"
+    static let operationFile = "\(dshHomePath)/guardian/operation.json"
+    static let updateFile = "\(dshHomePath)/guardian/update.json"
+    static let lastKnownGoodPath = "\(dshHomePath)/guardian/last-known-good"
+    static let engineStateFile = "\(dshHomePath)/guardian/engine.json"
+    static let eventsFile = "\(dshHomePath)/guardian/events.log"
 
     static var isInstalled: Bool {
         FileManager.default.fileExists(atPath: executable)
@@ -203,6 +227,7 @@ enum GuardianService {
             engineChannel: nil,
             integrations: nil,
             live: nil,
+            pluginCompatibility: nil,
             stage: nil,
             issues: nil,
             action: nil,

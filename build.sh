@@ -2,6 +2,13 @@
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
+TEST_BUILD=false
+if [ "${1:-}" = "--test" ]; then
+  TEST_BUILD=true
+elif [ "$#" -ne 0 ]; then
+  echo "用法：./build.sh [--test]"
+  exit 2
+fi
 mkdir -p bin/bin-cache
 
 DESKTOP_VERSION="$(plutil -extract CFBundleShortVersionString raw Info.plist)"
@@ -33,15 +40,23 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   -o bin/DeepSeekHarness -framework WebKit -framework SwiftUI -framework AppKit \
   -framework Network -framework UserNotifications -framework Carbon
 
-echo "== 安装 Guardian 安全启动组件 =="
-node Scripts/install-guardian.mjs
+if ! $TEST_BUILD; then
+  echo "== 安装 Guardian 安全启动组件 =="
+  node Scripts/install-guardian.mjs
+fi
 
 echo "== 组装 .app =="
 APP="$ROOT/DeepSeek Harness.app"
+if $TEST_BUILD; then APP="$ROOT/DeepSeek Harness Test.app"; fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp bin/DeepSeekHarness "$APP/Contents/MacOS/DeepSeekHarness"
 cp Info.plist "$APP/Contents/Info.plist"
+if $TEST_BUILD; then
+  plutil -replace CFBundleIdentifier -string com.dsh.desktop.test "$APP/Contents/Info.plist"
+  plutil -replace CFBundleName -string 'DeepSeek Harness Test' "$APP/Contents/Info.plist"
+  plutil -replace CFBundleDisplayName -string 'DeepSeek Harness Test' "$APP/Contents/Info.plist"
+fi
 [ -f "$ROOT/Resources/dsh-logo.svg" ] && cp "$ROOT/Resources/dsh-logo.svg" "$APP/Contents/Resources/dsh-logo.svg"
 
 echo "== 生成图标 =="
@@ -60,6 +75,12 @@ fi
 
 echo "== 签名 =="
 codesign --force --deep --sign - "$APP"
+
+if $TEST_BUILD; then
+  echo "测试版构建完成（未安装、未修改正式环境）：$APP"
+  echo "首次启动前运行：node Scripts/prepare-test-environment.mjs"
+  exit 0
+fi
 
 # 安装到内置 /Applications（真实 App，不是符号链接）。
 # 关键：macOS 的 Launchpad / Finder「应用程序」搜索不会索引外接磁盘上的 App，

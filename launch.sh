@@ -9,7 +9,7 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
 [ -d /opt/homebrew/bin ] && export PATH="/opt/homebrew/bin:$PATH"
 
-GUARDIAN="$HOME/.dsh/guardian/guardian.mjs"
+GUARDIAN="${DSH_HOME:-$HOME/.dsh}/guardian/guardian.mjs"
 if [ ! -f "$GUARDIAN" ]; then
   echo "guardian missing: $GUARDIAN"
   exit 1

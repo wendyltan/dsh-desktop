@@ -6,6 +6,7 @@ final class AppStore: NSObject, ObservableObject {
     @Published var serverStatus = "…"
     @Published var reloadToken = 0
     @Published var guardianStatus: GuardianResponse?
+    @Published var candidatePluginCompatibility: GuardianPluginCompatibility?
     @Published var guardianBusy = false
     @Published var guardianMessage = ""
     @Published var guardianError: String?
@@ -14,6 +15,7 @@ final class AppStore: NSObject, ObservableObject {
     private var guardianTimer: Timer?
 
     @Published var bridgeStatus = "事件桥尚未启动"
+    @Published var pendingSessionId: String?
     @Published var nativeTaskStatus = "暂无任务事件"
     @Published var nativeActionMessage = ""
     @Published var nativeMetrics = NativeMetricsSnapshot.empty()
@@ -92,6 +94,7 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 启动时调用：立即刷新余额并按设置间隔自动刷新。
     func startBalanceAutoRefresh() {
+        if ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1", !BalanceService.hasCredential() { return }
         refreshBalance()
         restartBalanceTimer()
     }
@@ -234,6 +237,26 @@ final class AppStore: NSObject, ObservableObject {
             w.makeKeyAndOrderFront(nil)
         }
     }
+    func openSession(_ sessionId: String?) {
+        nativeActionMessage = ""
+        pendingSessionId = sessionId
+        showClientPanel()
+    }
+
+    func sendNavigationTestNotification() {
+        guard ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" else { return }
+        guard let sessionId = quickPrompt.selectedSessionId else {
+            nativeActionMessage = "请先在快速提问里选择测试通知要打开的会话。"
+            showQuickPrompt()
+            return
+        }
+        notificationService.publish(DesktopBridgeEvent(
+            protocolVersion: EventBridge.protocolVersion,
+            id: "navigation-test-\(UUID().uuidString)", type: "task.completed",
+            title: "会话导航测试", message: "点击这条通知，应打开快速提问里选中的会话。不会调用模型。",
+            sessionId: sessionId, callbackURL: nil, promptURL: nil
+        ))
+    }
     func openHarness() { showClientPanel() }
     @objc private func menuOpenHarness() { openHarness() }
     @objc private func menuQuickPrompt() { showQuickPrompt() }
@@ -248,6 +271,7 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 打开「当前状态」独立浮窗（无需先打开客户端主窗口）。
     func showGuardianPanel() {
+        refreshGuardian(deep: true)
         guardianPanelController.show(store: self)
     }
 
@@ -255,11 +279,13 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 按当前设置注册全局快捷键。
     func registerHotKeys() {
+        guard ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] != "1" else { return }
         hotKeyManager.unregisterAll()
         if let error = hotKeyManager.register(settings.quickPromptShortcut, action: { [weak self] in
             guard let self else { return }
             if self.settings.quickPromptMode == "existing" {
-                self.refreshQuickPromptSummary()
+                self.refreshQuickPromptSessions()
+                self.refreshQuickPromptSummary(sessionId: self.quickPrompt.selectedSessionId)
             } else {
                 self.quickPrompt.summary = ""
             }
@@ -301,6 +327,8 @@ final class AppStore: NSObject, ObservableObject {
         settings.quickPromptMode = mode
         settings.save()
         refreshQuickPromptHint()
+        if mode == "existing" { refreshQuickPromptSessions() }
+        else { quickPrompt.summary = "" }
     }
 
     func updateQuickPromptModel(provider: String?, model: String?) {
@@ -315,11 +343,21 @@ final class AppStore: NSObject, ObservableObject {
         settings.save()
     }
 
-    /// 读取最近一次会话结果摘要（已有会话模式下展示）。
-    func refreshQuickPromptSummary() {
+    func refreshQuickPromptSessions() {
         guard let bridge = eventBridge else { return }
-        bridge.fetchSummary { [weak self] result in
+        bridge.fetchSessions { [weak self] result in
             guard let self else { return }
+            if case .success(let sessions) = result { self.quickPrompt.sessions = sessions }
+        }
+    }
+
+    private func refreshQuickPromptSummary(sessionId: String?) {
+        guard let bridge = eventBridge, let sessionId else {
+            quickPrompt.summary = ""
+            return
+        }
+        bridge.fetchSummary(sessionId: sessionId) { [weak self] result in
+            guard let self, self.quickPrompt.selectedSessionId == sessionId else { return }
             let text: String
             if case .success(let value) = result { text = value } else { text = "" }
             self.quickPromptSummary = text
@@ -330,6 +368,7 @@ final class AppStore: NSObject, ObservableObject {
     private func refreshQuickPromptHint() {
         if settings.quickPromptMode == "existing" {
             quickPrompt.modeHint = "已有会话"
+            refreshQuickPromptSessions()
         } else if let model = settings.quickPromptModel, !model.isEmpty {
             quickPrompt.modeHint = "新会话 · \(model)"
         } else {
@@ -381,27 +420,30 @@ final class AppStore: NSObject, ObservableObject {
         nativeMetrics = metrics.snapshot
         metrics.onChange = { [weak self] snapshot in self?.nativeMetrics = snapshot }
 
-        notificationService.onOpenClient = { [weak self] in self?.showClientPanel() }
+        notificationService.onOpenSession = { [weak self] sessionId in self?.openSession(sessionId) }
         notificationService.onActionResult = { [weak self] message in self?.nativeActionMessage = message }
         notificationService.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         notificationService.start()
 
         quickPrompt.onOpenClient = { [weak self] in self?.showClientPanel() }
         quickPrompt.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
-        quickPrompt.onSend = { [weak self] prompt, completion in
+        quickPrompt.onSessionChange = { [weak self] sessionId in self?.refreshQuickPromptSummary(sessionId: sessionId) }
+        quickPrompt.onSend = { [weak self] prompt, mode, sessionId, cwd, completion in
             guard let self, let bridge = self.eventBridge else {
                 completion(.failure(EventBridgeError.unavailable("事件桥不可用，草稿已保留。")))
                 return
             }
             bridge.sendPrompt(prompt,
-                              mode: self.settings.quickPromptMode,
+                              mode: mode,
+                              sessionId: sessionId,
+                              cwd: cwd,
                               provider: self.settings.quickPromptProvider,
                               model: self.settings.quickPromptModel,
                               effort: self.settings.quickPromptEffort,
                               completion: completion)
         }
 
-        registerHotKeys()
+        if ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] != "1" { registerHotKeys() }
         quickPrompt.shortcutHint = settings.quickPromptShortcut.displayString
         refreshQuickPromptHint()
 
@@ -435,7 +477,8 @@ final class AppStore: NSObject, ObservableObject {
 
     func showQuickPrompt() {
         if settings.quickPromptMode == "existing" {
-            refreshQuickPromptSummary()
+            refreshQuickPromptSessions()
+            refreshQuickPromptSummary(sessionId: quickPrompt.selectedSessionId)
         } else {
             quickPrompt.summary = ""
         }
@@ -502,6 +545,7 @@ final class AppStore: NSObject, ObservableObject {
                 }
             }
             DispatchQueue.main.async {
+                if !deep { response.retainPluginCompatibility(from: self.guardianStatus) }
                 self.guardianStatus = response
                 self.guardianError = error
                 self.guardianDiff = diff
@@ -530,12 +574,18 @@ final class AppStore: NSObject, ObservableObject {
         guardianBusy = true
         guardianError = nil
         guardianMessage = "正在检查并处理。"
+        candidatePluginCompatibility = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let (response, error) = GuardianService.run(command, args: args)
             DispatchQueue.main.async {
                 self.guardianBusy = false
-                if response?.up != nil || response?.guardianVersion != nil {
-                    self.guardianStatus = response
+                if let response {
+                    if response.up != nil || response.guardianVersion != nil {
+                        self.guardianStatus = response
+                        if response.pluginCompatibility != nil { self.candidatePluginCompatibility = nil }
+                    } else if let compatibility = response.pluginCompatibility {
+                        self.candidatePluginCompatibility = compatibility
+                    }
                 }
                 self.guardianError = error
                 self.guardianMessage = error == nil ? success : "操作失败"
@@ -697,6 +747,13 @@ final class AppStore: NSObject, ObservableObject {
                 self.refreshUpdateMenuItem()
                 let updateChannel = self.activeUpdateChannel ?? .latest
                 self.activeUpdateChannel = nil
+                if let response {
+                    if response.updated == true {
+                        self.candidatePluginCompatibility = nil
+                    } else if let compatibility = response.pluginCompatibility {
+                        self.candidatePluginCompatibility = compatibility
+                    }
+                }
                 if let error {
                     self.engineRetentionMandatory = false
                     self.updateMessage = "更新没有完成，但此前能正常运行的版本仍在使用。\n\n技术原因：\(error)"
@@ -749,6 +806,7 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 启动时调用：立即检查一次，之后每 6 小时自动检查。
     func startUpdateAutoCheck() {
+        guard ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] != "1" else { return }
         checkUpdate()
         updateTimer?.invalidate()
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in

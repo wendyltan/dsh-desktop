@@ -8,6 +8,7 @@ logs/
 # 本地用户数据（勿提交）
 settings.json
 native-metrics.json
+.test-home/
 
 # 系统文件
 .DS_Store

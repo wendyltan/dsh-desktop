@@ -9,6 +9,9 @@ final class QuickPromptModel: ObservableObject {
     @Published var shortcutHint = ""
     @Published var modeHint = ""
     @Published var summary = ""
+    @Published var sessions: [BridgeSession] = []
+    @Published var selectedSessionId: String?
+    @Published var newSessionDirectory = NSHomeDirectory()
 }
 
 struct QuickPromptView: View {
@@ -16,6 +19,7 @@ struct QuickPromptView: View {
     let send: () -> Void
     let openClient: () -> Void
     let close: () -> Void
+    let sessionChanged: (String?) -> Void
     @FocusState private var focused: Bool
 
     private var isExistingSession: Bool { model.modeHint == "已有会话" }
@@ -52,7 +56,7 @@ struct QuickPromptView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("快速提问")
                             .font(.title3.weight(.semibold))
-                        Text(isExistingSession ? "继续最近的对话" : "开始一段独立的新对话")
+                        Text(isExistingSession ? "继续指定的对话" : "开始一段独立的新对话")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -93,6 +97,34 @@ struct QuickPromptView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
+                }
+
+                if isExistingSession {
+                    Picker("目标会话", selection: $model.selectedSessionId) {
+                        Text("选择会话").tag(String?.none)
+                        ForEach(model.sessions) { session in
+                            Text("\(session.title) · \(session.cwd.isEmpty ? "目录未知" : session.cwd)")
+                                .tag(Optional(session.sessionId))
+                        }
+                    }
+                    .disabled(model.sessions.isEmpty || model.sending)
+                } else {
+                    HStack(spacing: 8) {
+                        Text("新会话目录")
+                            .foregroundStyle(.secondary)
+                        TextField("绝对路径", text: $model.newSessionDirectory)
+                            .textFieldStyle(.roundedBorder)
+                        Button("选择…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseFiles = false
+                            panel.canChooseDirectories = true
+                            panel.allowsMultipleSelection = false
+                            panel.directoryURL = URL(fileURLWithPath: model.newSessionDirectory, isDirectory: true)
+                            if panel.runModal() == .OK, let url = panel.url {
+                                model.newSessionDirectory = url.path
+                            }
+                        }
+                    }
                 }
 
                 ZStack(alignment: .topLeading) {
@@ -145,13 +177,16 @@ struct QuickPromptView: View {
                     }
                     .keyboardShortcut(.return, modifiers: .command)
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.sending || !model.connected || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(model.sending || !model.connected || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || (isExistingSession && model.selectedSessionId == nil)
+                              || (!isExistingSession && model.newSessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
             .padding(20)
         }
-        .frame(width: 600, height: 390)
+        .frame(width: 680, height: isExistingSession ? 450 : 490)
         .onAppear { focused = true }
+        .onChange(of: model.selectedSessionId) { sessionChanged($0) }
         .onExitCommand(perform: close)
     }
 }
@@ -159,7 +194,8 @@ struct QuickPromptView: View {
 final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     private let model = QuickPromptModel()
     private var panel: NSPanel?
-    var onSend: ((String, @escaping (Result<Void, Error>) -> Void) -> Void)?
+    var onSend: ((String, String, String?, String?, @escaping (Result<Void, Error>) -> Void) -> Void)?
+    var onSessionChange: ((String?) -> Void)?
     var onOpenClient: (() -> Void)?
     var onMetric: ((NativeMetric, String?) -> Void)?
 
@@ -181,6 +217,24 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     var summary: String {
         get { model.summary }
         set { model.summary = newValue }
+    }
+
+    var sessions: [BridgeSession] {
+        get { model.sessions }
+        set {
+            let previousSelection = model.selectedSessionId
+            model.sessions = newValue
+            model.selectedSessionId = newValue.first(where: { $0.sessionId == previousSelection })?.sessionId ?? newValue.first?.sessionId
+            onSessionChange?(model.selectedSessionId)
+        }
+    }
+
+    var selectedSessionId: String? {
+        get { model.selectedSessionId }
+        set {
+            model.selectedSessionId = newValue
+            onSessionChange?(newValue)
+        }
     }
 
     func toggle() {
@@ -214,7 +268,8 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
             model: model,
             send: { [weak self] in self?.submit() },
             openClient: { [weak self] in self?.onOpenClient?() },
-            close: { [weak self] in self?.close() }
+            close: { [weak self] in self?.close() },
+            sessionChanged: { [weak self] sessionId in self?.onSessionChange?(sessionId) }
         ))
         self.panel = panel
     }
@@ -230,7 +285,10 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         }
         model.sending = true
         model.status = "正在发送…"
-        onSend(prompt) { [weak self] result in
+        let existing = model.modeHint == "已有会话"
+        onSend(prompt, existing ? "existing" : "new",
+               existing ? model.selectedSessionId : nil,
+               existing ? nil : model.newSessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
             guard let self else { return }
             self.model.sending = false
             switch result {

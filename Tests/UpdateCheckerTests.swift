@@ -10,6 +10,21 @@ struct UpdateCheckerTests {
             else { failures += 1; print("FAIL  \(label)") }
         }
 
+        if let testHome = ProcessInfo.processInfo.environment["DSH_HOME"] {
+            expect(ServerManager.webAccessURLFile == "\(testHome)/guardian/web-access-url", "isolated authentication file")
+            expect(ServerManager.launchScript == "\(testHome)/dsh-desktop/launch.sh", "isolated launcher")
+            expect(ServerManager.stopScript == "\(testHome)/dsh-desktop/stop.sh", "isolated stop script")
+            expect(GuardianService.engineStateFile == "\(testHome)/guardian/engine.json", "isolated engine state")
+        }
+
+        let previous = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"engine\":\"0.2.0\",\"pluginCompatibility\":{\"checked\":true,\"issues\":[]}}".utf8))
+        var light = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"engine\":\"0.2.0\"}".utf8))
+        light.retainPluginCompatibility(from: previous)
+        expect(light.pluginCompatibility?.checked == true, "light refresh retains checked plugin status")
+        var changedEngine = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"engine\":\"0.3.0\"}".utf8))
+        changedEngine.retainPluginCompatibility(from: previous)
+        expect(changedEngine.pluginCompatibility == nil, "engine change clears prior plugin status")
+
         // SemVer 数值比较（10 > 9，10.0.0 > 2.0.0，不按字符串排序）
         expect(UpdateChecker.isNewer("1.0.10", than: "1.0.9"), "patch 10 > 9")
         expect(!UpdateChecker.isNewer("1.0.9", than: "1.0.10"), "patch 9 < 10")

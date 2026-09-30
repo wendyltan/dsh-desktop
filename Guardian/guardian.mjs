@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import {
   chmodSync, closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync,
   lstatSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync,
@@ -8,8 +9,8 @@ import {
 import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HOME = homedir()
 const DSH_HOME = process.env.DSH_HOME ?? join(HOME, '.dsh')
@@ -265,6 +266,149 @@ function resolveDshBin() {
 }
 function dshEntry() { return realpathSync(resolveDshBin()) }
 
+function enginePackageRoot(bin = dshEntry()) {
+  try { bin = realpathSync(bin) } catch {}
+  let dir = dirname(bin)
+  for (let i = 0; i < 12 && dir; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+      if (pkg.name === '@deepseek-ai/dsh') return dir
+    } catch {}
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+function sessionFormatVersion(bin = dshEntry()) {
+  if (sessionFormatCache.has(bin)) return sessionFormatCache.get(bin)
+  const packageRoot = enginePackageRoot(bin)
+  if (!packageRoot) return null
+  try {
+    const moduleURL = pathToFileURL(join(dirname(packageRoot), 'dsh-session', 'lib', 'index.js')).href
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', `import(${JSON.stringify(moduleURL)}).then(({ SESSION_FORMAT_VERSION }) => process.stdout.write(String(SESSION_FORMAT_VERSION)))`], { encoding: 'utf8', timeout: 10_000 })
+    const version = result.status === 0 && /^\d+$/.test(result.stdout) ? Number(result.stdout) : null
+    sessionFormatCache.set(bin, version)
+    return version
+  } catch { return null }
+}
+
+const sessionFormatCache = new Map()
+
+function sessionPersistenceRoot(bin = dshEntry()) {
+  try {
+    const result = spawnSync(process.execPath, [bin, '--profile', 'web', '--dump-config'], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, DSH_HOME },
+    })
+    if (result.status !== 0) return null
+    const lines = result.stdout.split(/\r?\n/)
+    const roots = []
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(/^(\s*)- id: session-persistence-jsonl\s*$/)
+      if (!match) continue
+      for (let j = i + 1; j < lines.length; j++) {
+        if (new RegExp(`^${match[1]}- id:`).test(lines[j])) break
+        const config = lines[j].match(/^\s+root:\s*(.*?)\s*$/)
+        if (config) roots.push(config[1])
+      }
+    }
+    const values = [...new Set(roots)]
+    if (values.length !== 1) return null
+    const value = values[0]
+    if (/^!!js dshHomePath\(['"]sessions['"]\)$/.test(value)) return join(DSH_HOME, 'sessions')
+    const literal = value.startsWith('"') ? JSON.parse(value)
+      : value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1).replace(/''/g, "'")
+      : value
+    return typeof literal === 'string' && isAbsolute(literal) ? resolve(literal) : null
+  } catch { return null }
+}
+
+function sessionRollbackCompatibility(targetBin, sessionRoot = sessionPersistenceRoot(), { currentFormat = sessionFormatVersion(), targetFormat = sessionFormatVersion(targetBin) } = {}) {
+  const newerFormats = new Set()
+  let reason = null
+  if (!sessionRoot) reason = '无法确认 Session 持久化目录，已阻止引擎回退以保护原数据。'
+  if (!reason && currentFormat !== null && targetFormat !== null && existsSync(sessionRoot)) {
+    try {
+      if (lstatSync(sessionRoot).isSymbolicLink()) reason = 'Session 持久化目录是符号链接，无法安全确认会话代际；已阻止引擎回退。'
+    } catch { reason = '无法读取 Session 持久化目录，已阻止引擎回退以保护原数据。' }
+    const visit = (dir) => {
+      const localFormats = new Set()
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name)
+        if (entry.isSymbolicLink()) { reason = '会话目录中包含符号链接，无法安全确认会话代际；已阻止引擎回退。'; continue }
+        if (entry.isDirectory()) visit(path)
+        else if (entry.isFile()) {
+          const match = entry.name.match(/^session\.v(\d+)\.jsonl(?:\.zstd)?$/)
+          if (match) localFormats.add(Number(match[1]))
+        }
+      }
+      if (localFormats.size) newerFormats.add(Math.max(...localFormats))
+    }
+    try { visit(sessionRoot) } catch { reason = '无法读取 Session 持久化目录，已阻止引擎回退以保护原数据。' }
+  }
+  const formats = [...newerFormats].filter((format) => format > targetFormat).sort((a, b) => a - b)
+  if (!reason && (currentFormat === null || targetFormat === null)) reason = '无法确认引擎支持的 Session 格式，已阻止引擎回退以保护原数据。'
+  if (!reason && formats.length) reason = `已有 Session V${formats.join(', V')} generation，旧引擎 V${targetFormat} 无法读取；为保护原数据已阻止回退。`
+  return {
+    safe: reason === null,
+    currentFormat, targetFormat, newerFormats: formats,
+    reason,
+  }
+}
+
+function sessionRestoreCompatibility(targetBin, currentBin) {
+  return sessionRollbackCompatibility(targetBin, sessionPersistenceRoot(currentBin), {
+    currentFormat: sessionFormatVersion(currentBin),
+    targetFormat: sessionFormatVersion(targetBin),
+  })
+}
+
+function pluginCompatibility(profile = PROFILE, bin = dshEntry()) {
+  const profilePackage = readJson(join(profile, 'package.json'))
+  const engineRoot = enginePackageRoot(bin)
+  if (!profilePackage || !engineRoot) return { checked: false, issues: [] }
+  const requireFromEngine = createRequire(bin)
+  let satisfies
+  try { satisfies = requireFromEngine('semver').satisfies } catch { return { checked: false, issues: [] } }
+  const engineModules = dirname(dirname(engineRoot))
+  const enabled = new Set(profilePackage.dsh?.profile?.bundles ?? [])
+  const modules = join(profile, 'node_modules')
+  if (!existsSync(modules)) return { checked: true, issues: [] }
+  const installedPlugins = readdirSync(modules, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith('.')) return []
+    const path = join(modules, entry.name)
+    let isDirectory = false
+    try { isDirectory = statSync(path).isDirectory() } catch {}
+    const entries = entry.name.startsWith('@') && isDirectory
+      ? readdirSync(path, { withFileTypes: true }).filter((item) => item.isDirectory() || item.isSymbolicLink()).map((item) => `${entry.name}/${item.name}`)
+      : isDirectory ? [entry.name] : []
+    return entries
+  })
+  const issues = installedPlugins.flatMap((id) => {
+    if (!/^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(id)) return []
+    const manifest = readJson(join(modules, ...id.split('/'), 'package.json'))
+    if (!manifest || !manifest.peerDependencies || !(manifest.dsh?.bundle || manifest.dsh?.client)) return []
+    const issues = []
+    for (const [name, range] of Object.entries(manifest.peerDependencies)) {
+      let actual
+      if (!/^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(name)) {
+        issues.push({ name, required: range, actual: null })
+        continue
+      }
+      for (const modules of [engineModules, join(profile, 'node_modules')]) {
+        actual = readJson(join(modules, ...name.split('/'), 'package.json'))?.version
+        if (actual) break
+      }
+      let compatible = false
+      try { compatible = actual !== undefined && satisfies(actual, range) } catch {}
+      if (!compatible) issues.push({ name, required: range, actual: actual ?? null })
+    }
+    return issues.length ? [{ id, version: manifest.version ?? null, enabled: enabled.has(id), issues }] : []
+  })
+  return { checked: true, issues }
+}
+
 function validEngineVersion(value) {
   return typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)
 }
@@ -393,12 +537,20 @@ async function updateEngine(version, channel = null) {
   const originalState = readJson(ENGINE_STATE_FILE)
   const selectedCurrent = activeEngineSelection(originalState ?? {})
   const currentSelection = selectedCurrent
+  const originalBin = currentSelection?.active ?? dshEntry()
   const priorHistory = retainedEngines(originalState ?? {})
   updateProgress({ phase: 'downloading', percent: 10, version, message: '正在下载引擎及其依赖（预计需要几分钟）' })
   let installed
   try { installed = await installEngine(version) } catch (error) {
     updateProgress({ phase: 'failed', percent: 0, version, message: error.message })
     throw error
+  }
+  const rollbackCompatibility = sessionRollbackCompatibility(installed.bin)
+  if (!rollbackCompatibility.safe) {
+    rmSync(installed.target, { recursive: true, force: true })
+    const error = rollbackCompatibility.reason ?? '无法确认会话格式兼容性，已阻止引擎回退以保护原数据。'
+    updateProgress({ phase: 'failed', percent: 0, version, message: error })
+    return { ok: false, updated: false, stage: 'session-compatibility', rollbackCompatibility, error }
   }
   const installedAt = now()
   const next = { active: installed.bin, version, installedAt, validatedAt: null, retainedAt: installedAt }
@@ -413,7 +565,7 @@ async function updateEngine(version, channel = null) {
   writeEngineSelection({ ...next, channel: targetChannel }, planned.retained)
 
   updateProgress({ phase: 'preflight', percent: 65, version, message: '下载完成，正在执行隔离预检' })
-  const checked = await preflight()
+  const checked = await preflight({ enforcePluginCompatibility: true })
   if (!checked.ok) {
     const reason = (checked.issues ?? ['未知错误'])
       .map((item) => String(item).replace(/\s+/g, ' ').trim().slice(0, 360))
@@ -425,7 +577,7 @@ async function updateEngine(version, channel = null) {
     const error = `引擎 ${version} 未通过隔离预检：${reason}`
     updateProgress({ phase: 'rolled-back', percent: 0, version, message: `预检未通过，已保留当前引擎：${reason}` })
     appendEvent('rolled-back', `更新到 ${version} 未通过检查，已保持当前版本。`, { fromVersion: current, toVersion: version, scope: 'engine' })
-    return { ok: false, updated: false, stage: checked.stage, issues: checked.issues, error, rolledBack: true }
+    return { ok: false, updated: false, stage: checked.stage, issues: checked.issues, pluginCompatibility: checked.pluginCompatibility, error, rolledBack: true }
   }
 
   updateProgress({ phase: 'restarting', percent: 90, version, message: '预检通过，正在安全重启服务' })
@@ -443,9 +595,19 @@ async function updateEngine(version, channel = null) {
     for (const item of planned.dropped) removeManagedEngine(item)
     updateProgress({ phase: 'completed', percent: 100, version, message: `引擎已更新到 ${version}` })
     appendEvent('updated', `Harness 引擎已从 ${current ?? '未知版本'} 更新到 ${version}。`, { fromVersion: current, toVersion: version, scope: 'engine' })
-    return { ...restarted, updated: true, fromVersion: current, toVersion: version, retainedVersions: planned.retained.map((item) => item.version) }
+    return { ...restarted, updated: true, fromVersion: current, toVersion: version, retainedVersions: planned.retained.map((item) => item.version), pluginCompatibility: checked.pluginCompatibility }
   }
 
+  const restoreCompatibility = sessionRestoreCompatibility(originalBin, installed.bin)
+  if (!restoreCompatibility.safe) {
+    const error = `新引擎启动失败，已保留引擎 ${version} 及当前 Session 数据；阻止恢复旧引擎：${restoreCompatibility.reason}`
+    updateProgress({ phase: 'failed', percent: 0, version, message: error })
+    return {
+      ok: false, updated: false, rolledBack: false, rollbackBlocked: true,
+      fromVersion: current, toVersion: version, restart: restarted,
+      rollbackCompatibility: restoreCompatibility, error,
+    }
+  }
   if (originalState) writeJsonAtomic(ENGINE_STATE_FILE, originalState)
   else rmSync(ENGINE_STATE_FILE, { force: true })
   rmSync(installed.target, { recursive: true, force: true })
@@ -461,7 +623,7 @@ async function updateEngine(version, channel = null) {
   return {
     ok: false, updated: false, rolledBack: rollbackRestored,
     fromVersion: current, toVersion: version, restart: restarted, rollback, rollbackError,
-    error: rollbackMessage,
+    error: rollbackMessage, pluginCompatibility: checked.pluginCompatibility,
   }
 }
 
@@ -474,6 +636,8 @@ async function switchEngineVersion(version, { allowEngineRollback = false } = {}
   const history = retainedEngines(originalState)
   const target = history.find((item) => item.version === version && existsSync(item.active))
   if (!target) return { ok: false, error: `引擎 ${version} 未保留在本机，无法离线切换` }
+  const rollbackCompatibility = sessionRollbackCompatibility(target.active)
+  if (!rollbackCompatibility.safe) return { ok: false, error: rollbackCompatibility.reason ?? '无法确认会话格式兼容性，已阻止引擎回退以保护原数据。', rollbackCompatibility }
 
   const candidates = uniqueEngineEntries([
     { ...current, retainedAt: now() },
@@ -482,10 +646,11 @@ async function switchEngineVersion(version, { allowEngineRollback = false } = {}
   const planned = pruneEngineEntries(candidates)
   writeEngineSelection({ ...target, validatedAt: target.validatedAt ?? now() }, planned.retained)
   operationProgress(25, `正在验证 Harness 引擎 ${version}…`)
-  const checked = await preflight()
+  const checked = await preflight({ enforcePluginCompatibility: true })
   if (!checked.ok) {
     writeJsonAtomic(ENGINE_STATE_FILE, originalState)
-    return { ok: false, stage: checked.stage, issues: checked.issues, error: `引擎 ${version} 未通过隔离预检，已保持当前版本 ${current.version}` }
+    const detail = checked.issues?.length ? `：${checked.issues.join('；')}` : ''
+    return { ok: false, stage: checked.stage, issues: checked.issues, pluginCompatibility: checked.pluginCompatibility, error: `引擎 ${version} 未通过隔离预检，已保持当前版本 ${current.version}${detail}` }
   }
   snapshot()
   operationProgress(70, `验证通过，正在切换到 Harness 引擎 ${version}…`)
@@ -495,9 +660,18 @@ async function switchEngineVersion(version, { allowEngineRollback = false } = {}
     writeEngineSelection({ ...selected, validatedAt: now() }, retainedEngines(selected))
     for (const item of planned.dropped) removeManagedEngine(item)
     appendEvent('engine-switched', `Harness 引擎已从 ${current.version} 切换到 ${version}。`, { fromVersion: current.version, toVersion: version, scope: 'engine' })
-    return { ...started, switched: true, fromVersion: current.version, toVersion: version }
+    return { ...started, switched: true, fromVersion: current.version, toVersion: version, pluginCompatibility: checked.pluginCompatibility }
   }
 
+  const restoreCompatibility = sessionRestoreCompatibility(current.active, target.active)
+  if (!restoreCompatibility.safe) {
+    const error = `引擎 ${version} 启动失败；为保护当前 Session 数据，已阻止恢复旧引擎 ${current.version}：${restoreCompatibility.reason}`
+    operationProgress(100, error, 'failed')
+    return {
+      ok: false, switched: false, fromVersion: current.version, toVersion: version,
+      restored: false, rollbackBlocked: true, rollbackCompatibility: restoreCompatibility, error,
+    }
+  }
   writeJsonAtomic(ENGINE_STATE_FILE, originalState)
   const restored = await startProduction({ allowEngineRollback })
   return {
@@ -815,12 +989,22 @@ async function health(base, { healthPaths = [], checkBundles = true, accessURL =
   return { bootRev: boot.rev, modules: boot.entries.length }
 }
 
-async function preflight({ smoke = true } = {}) {
+async function preflight({ smoke = true, enforcePluginCompatibility = false } = {}) {
   const basic = validateProfileFiles()
   if (!basic.ok) return { ok: false, stage: 'files', ...basic }
+  const pluginStatus = pluginCompatibility()
+  if (enforcePluginCompatibility && !pluginStatus.checked) {
+    return { ok: false, stage: 'plugin-compatibility', issues: ['无法确认已安装插件的依赖兼容性'], pluginCompatibility: pluginStatus }
+  }
+  const enabledPluginIssues = pluginStatus.issues.filter((plugin) => plugin.enabled)
+  if (enforcePluginCompatibility && enabledPluginIssues.length) {
+    const issues = enabledPluginIssues.flatMap((plugin) => plugin.issues.map((dependency) =>
+      `${plugin.id}: ${dependency.name} 需要 ${dependency.required}，当前 ${dependency.actual ?? '未安装'}`))
+    return { ok: false, stage: 'plugin-compatibility', issues, pluginCompatibility: pluginStatus }
+  }
   applyRuntimePatch()
-  try { dumpConfigCheck() } catch (error) { return { ok: false, stage: 'compose', issues: [String(error.message ?? error)] } }
-  if (!smoke) return { ok: true, stage: 'compose', bundles: basic.bundles }
+  try { dumpConfigCheck() } catch (error) { return { ok: false, stage: 'compose', issues: [String(error.message ?? error)], pluginCompatibility: pluginStatus } }
+  if (!smoke) return { ok: true, stage: 'compose', bundles: basic.bundles, pluginCompatibility: pluginStatus }
   const { scratch } = makeScratch()
   const port = await freePort()
   const smokeOut = join(ROOT, 'smoke.out.log')
@@ -852,7 +1036,7 @@ async function preflight({ smoke = true } = {}) {
         healthySince ??= Date.now()
         healthyResult = result
         if (Date.now() - healthySince >= 2_000) {
-          return { ok: true, stage: 'smoke', port, ...healthyResult, bundles: basic.bundles }
+          return { ok: true, stage: 'smoke', port, ...healthyResult, bundles: basic.bundles, pluginCompatibility: pluginStatus }
         }
       } catch (error) {
         healthySince = null
@@ -1215,7 +1399,7 @@ async function status() {
     ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION,
     capabilities: CAPABILITIES, up, url: BASE, state: state(), lastKnownGood: existsSync(LKG),
     engine: selectedEngine?.version ?? detectEngineVersion(), engineChannel: selectedEngine?.channel ?? null,
-    pid, integrations: guardianIntegrations(), live,
+    pid, integrations: guardianIntegrations(), live, pluginCompatibility: pluginCompatibility(),
     update: readJson(UPDATE_STATE_FILE),
     operation: readJson(OPERATION_STATE_FILE),
     previousVersion: previousEngine()?.toVersion ?? null,
@@ -1345,6 +1529,8 @@ export {
   appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
   health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
+  sessionRollbackCompatibility, sessionRestoreCompatibility, sessionFormatVersion, sessionPersistenceRoot, pluginCompatibility,
+  preflight,
   switchEngineVersion, validateProfileFiles,
   logTextFromByteOffset, makeScratch, recordWebAccessURL,
   webAccessURLFromLogs, webAccessURLFromText, webAccessURLsFromText,

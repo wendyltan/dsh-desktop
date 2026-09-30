@@ -1,5 +1,9 @@
 import Foundation
 
+/// Shared by the GUI and command-line client, including isolated test installs.
+let dshHomePath = ProcessInfo.processInfo.environment["DSH_HOME"]
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh").path
+
 struct ShellResult {
     let exitCode: Int32
     let stdout: String

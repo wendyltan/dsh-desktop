@@ -4,9 +4,13 @@
   "description": "Local-only DeepSeek Harness adapter for dsh-desktop notifications, approvals and quick prompts.",
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "test:client": "node --test test/client-navigation.test.mjs"
+  },
   "license": "MIT",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./client/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -19,6 +23,13 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-api-session-controller"
+      ],
+      "platform": "web"
+    },
     "guardian": {
       "protocolVersion": 1,
       "healthPath": "/dsh-desktop-bridge/status",
@@ -26,5 +37,5 @@
       "profileFiles": []
     }
   },
-  "files": ["lib", "cordis.patch.yml"]
+  "files": ["lib", "client", "cordis.patch.yml"]
 }

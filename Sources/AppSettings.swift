@@ -43,8 +43,7 @@ struct AppSettings: Codable {
     }
 
     static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".dsh/dsh-desktop/settings.json")
+        URL(fileURLWithPath: dshHomePath).appendingPathComponent("dsh-desktop/settings.json")
     }
 
     static func load() -> AppSettings {

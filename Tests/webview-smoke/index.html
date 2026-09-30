@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本机 WKWebView 检查</title>
+<style>
+  :root { color-scheme: light dark; font: 16px -apple-system, BlinkMacSystemFont, sans-serif; }
+  body { max-width: 760px; margin: 48px auto; padding: 0 24px; }
+  section { margin: 24px 0; padding: 18px; border: 1px solid #8885; border-radius: 12px; }
+  button, a { margin: 6px 10px 6px 0; }
+  #session { overflow-wrap: anywhere; }
+</style>
+<body>
+  <h1>本机 WKWebView 检查</h1>
+  <p>所有操作都在 127.0.0.1 本地进行；文件选择只读取文件名，不会上传。</p>
+
+  <section>
+    <h2>同源新窗口</h2>
+    <a href="/target.html" target="_blank" rel="noreferrer">打开同源 target_blank 页面</a>
+    <span>预期：同一个 WebView 显示目标页。</span>
+  </section>
+
+  <section>
+    <h2>Blob 下载</h2>
+    <button id="download">下载本地生成的文本文件</button>
+    <span>预期：出现系统保存面板，文件名为 dsh-webview-smoke.txt。</span>
+  </section>
+
+  <section>
+    <h2>附件选择</h2>
+    <label>选择一个文件：<input id="file" type="file"></label>
+    <p id="file-name">尚未选择文件。</p>
+  </section>
+
+  <section>
+    <h2>会话定位与 ACK</h2>
+    <p>先点桌面窗口顶部“测试会话定位”。本页收到会显示会话编号，再手动点确认发送 ACK。</p>
+    <p id="session">等待桌面端请求。</p>
+    <button id="ack" disabled>确认本页已收到并定位</button>
+    <button id="fail" disabled>发送失败 ACK</button>
+  </section>
+
+<script>
+  const bridge = window.webkit?.messageHandlers?.dshDesktopOpenSession;
+  const session = document.querySelector('#session');
+  const ack = document.querySelector('#ack');
+  const fail = document.querySelector('#fail');
+  let requestedSessionId;
+
+  bridge?.postMessage({ ready: true });
+  window.addEventListener('dsh-desktop-open-session', (event) => {
+    requestedSessionId = event.detail?.sessionId;
+    session.textContent = `网页已收到：${requestedSessionId}`;
+    ack.disabled = fail.disabled = false;
+  });
+  ack.addEventListener('click', () => {
+    if (!requestedSessionId) return;
+    bridge?.postMessage({ sessionId: requestedSessionId, opened: true });
+    session.textContent += '；已发送成功 ACK。';
+    ack.disabled = fail.disabled = true;
+  });
+  fail.addEventListener('click', () => {
+    if (!requestedSessionId) return;
+    bridge?.postMessage({ sessionId: requestedSessionId, opened: false, error: '测试失败：网页无法定位会话。' });
+    fail.disabled = ack.disabled = true;
+  });
+  document.querySelector('#download').addEventListener('click', () => {
+    const blob = new Blob(['dsh-desktop WKWebView local download smoke test\n'], { type: 'text/plain' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'dsh-webview-smoke.txt';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  });
+  document.querySelector('#file').addEventListener('change', (event) => {
+    document.querySelector('#file-name').textContent = event.target.files[0]?.name ?? '尚未选择文件。';
+  });
+</script>
+</body>
+</html>
