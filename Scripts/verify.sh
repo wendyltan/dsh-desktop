@@ -45,6 +45,12 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/QuickPromptPanel.swift Tests/QuickPromptPanelTests.swift -o bin/quick-prompt-tests
 bin/quick-prompt-tests
 
+echo "== 全局快捷键事务与键名验证 =="
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
+  Sources/GlobalHotKey.swift Tests/GlobalHotKeyTests.swift \
+  -framework Carbon -framework AppKit -o bin/global-hotkey-tests
+bin/global-hotkey-tests
+
 echo "== Guardian 集成验证 =="
 node Guardian/verify.mjs
 if [ "${1:-}" = "--installed-engines" ]; then

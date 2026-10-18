@@ -8,6 +8,13 @@ struct BridgeSession: Identifiable {
     var id: String { sessionId }
 }
 
+struct BridgeModel: Identifiable {
+    let provider: String
+    let model: String
+    let name: String
+    var id: String { "\(provider):\(model)" }
+}
+
 enum NativeMetric {
     case quickPromptOpened, quickPromptSent, quickPromptFailed
 }
@@ -50,6 +57,29 @@ struct QuickPromptPanelTests {
         expect(changedSelection == nil, "failed fetch notifies that the target was cleared")
         expect(!panel.sessionsLoading, "failure ends loading")
         if let model { expect(model.text == "keep this draft", "failed fetch preserves draft text") }
+
+        let duplicateTitleSessions = [
+            BridgeSession(sessionId: "session-123456", title: "同名会话", cwd: "/work/project", live: true),
+            BridgeSession(sessionId: "session-abcdef", title: "同名会话", cwd: "/work/project", live: true),
+        ]
+        let labelView = QuickPromptView(model: model!, send: {}, openClient: {}, close: {}, sessionChanged: { _ in }, onRetrySessions: nil)
+        let labels = duplicateTitleSessions.map { labelView.sessionLabel(for: $0, among: duplicateTitleSessions) }
+        expect(labels[0] != labels[1] && labels.allSatisfy { $0.contains("project") }, "same-title same-directory sessions get distinct readable labels")
+
+        panel.modelsLoading = true
+        expect(panel.modelsLoading && panel.modelsError == nil, "model list exposes loading state")
+        var modelRetries = 0
+        panel.onRetryModels = { modelRetries += 1 }
+        panel.onRetryModels?()
+        expect(modelRetries == 1, "model list retry hook runs")
+        let request = panel.beginModelLoad()
+        expect(panel.finishModelLoad(request, result: .success([BridgeModel(provider: "p", model: "m", name: "Model")])), "current model response is accepted")
+        expect(panel.models.count == 1 && panel.modelsError == nil && !panel.modelsLoading, "model success clears loading and error")
+        let stale = panel.beginModelLoad()
+        let current = panel.beginModelLoad()
+        expect(panel.finishModelLoad(current, result: .failure(NSError(domain: "test", code: 1))), "latest model response is accepted")
+        expect(!panel.finishModelLoad(stale, result: .success([])), "stale model response is rejected")
+        expect(panel.modelsError != nil && panel.models.isEmpty, "stale model response cannot replace current failure")
 
         var retries = 0
         panel.onRetrySessions = { retries += 1 }

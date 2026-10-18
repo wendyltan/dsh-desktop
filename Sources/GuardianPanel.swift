@@ -61,10 +61,12 @@ struct GuardianPanel: View {
     @State private var activeAlert: PanelAlert?
     @State private var activeSheet: PanelSheet?
     @State private var showMore = false
+    @State private var showAllEvents = false
     let close: () -> Void
 
     private var response: GuardianResponse? { store.guardianStatus }
     private var isRunning: Bool { response?.up == true }
+    private var isSafeMode: Bool { response?.isRunningInSafeMode == true }
     private var isRecovering: Bool { store.guardianBusy || response?.operation?.phase == "running" }
     private var events: [GuardianEvent] { response?.recentEvents ?? [] }
     private var pluginCompatibility: GuardianPluginCompatibility? {
@@ -84,12 +86,14 @@ struct GuardianPanel: View {
 
     private var guardianColor: Color {
         if isRecovering { return .deepseekBlue }
+        if isSafeMode { return .orange }
         if isRunning { return .green }
         return .red
     }
 
     private var title: String {
         if isRecovering { return "正在处理" }
+        if isSafeMode { return "服务处于受限运行" }
         if isRunning, hasPluginWarning {
             return checkingCandidate ? "服务可用 · 候选插件需检查" : "服务可用 · 插件需检查"
         }
@@ -103,6 +107,7 @@ struct GuardianPanel: View {
             if !store.guardianMessage.isEmpty { return store.guardianMessage }
             return "桌面保护组件正在检查并恢复。完成后会自动再次确认。"
         }
+        if isSafeMode { return "基础服务仍可使用，但完整功能尚未恢复。你可以尝试恢复完整运行。" }
         if isRunning {
             if checkingCandidate {
                 return "候选引擎预检结果；当前运行服务仍保持原状态。"
@@ -140,13 +145,12 @@ struct GuardianPanel: View {
                     actionRow
                 }
 
-                if let compatibility = pluginCompatibility,
-                   !compatibility.checked || !compatibility.issues.isEmpty {
-                    pluginCompatibilityCard(compatibility, candidate: checkingCandidate)
+                if isRunning && hasPluginWarning {
+                    pluginWarningCard
                 }
 
                 if let error = store.guardianError, !error.isEmpty, !isRecovering {
-                    Text("还没完全恢复。你可以在下面「更多」里看发生了什么，或再试一次。")
+                    Text("还没完全恢复。你可以在「详情与恢复」里看发生了什么，或再试一次。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -159,9 +163,9 @@ struct GuardianPanel: View {
         .onExitCommand(perform: close)
         .alert(item: $activeAlert) { alert in
             Alert(
-                title: Text(isRunning ? "重新启动服务？" : "检查并尝试恢复？"),
+                title: Text(isSafeMode ? "尝试恢复完整运行？" : (isRunning ? "重新启动服务？" : "检查并尝试恢复？")),
                 message: Text("服务会短暂重新连接。开始前会检查能否正常启动；如果无法启动，会继续使用此前能正常运行的状态。"),
-                primaryButton: .default(Text(isRunning ? "重新启动" : "开始恢复")) { store.restartWithGuardian() },
+                primaryButton: .default(Text(isSafeMode ? "尝试恢复完整运行" : (isRunning ? "重新启动" : "开始恢复"))) { store.restartWithGuardian() },
                 secondaryButton: .cancel(Text("取消"))
             )
         }
@@ -205,7 +209,10 @@ struct GuardianPanel: View {
 
     private var actionRow: some View {
         HStack(spacing: 10) {
-            if isRunning {
+            if isSafeMode {
+                Button("尝试恢复完整运行") { activeAlert = .restart }
+                    .buttonStyle(.borderedProminent)
+            } else if isRunning {
                 Button("打开客户端窗口") { store.openHarness() }
                     .buttonStyle(.borderedProminent)
             } else {
@@ -242,8 +249,12 @@ struct GuardianPanel: View {
 
             if showMore {
                 componentCard
-                timelineCard
                 technicalCard
+                if let compatibility = pluginCompatibility,
+                   !compatibility.checked || !compatibility.issues.isEmpty {
+                    pluginCompatibilityCard(compatibility, candidate: checkingCandidate)
+                }
+                timelineCard
             }
         }
     }
@@ -290,12 +301,8 @@ struct GuardianPanel: View {
                         .font(.callout)
                 }
                 if !activeIssues.isEmpty {
-                    Text("以下已启用插件的依赖版本需要检查，可能无法正常工作。桌面端不会自动停用或删除它们。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    ForEach(activeIssues) { plugin in
-                        pluginCompatibilityDetail(plugin)
-                    }
+                    Text("已启用插件的依赖详情见上方提醒。桌面端不会自动停用或删除它们。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if !inactiveIssues.isEmpty {
                     DisclosureGroup {
@@ -321,6 +328,39 @@ struct GuardianPanel: View {
         }
     }
 
+    private var pluginWarningCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(warningTitle, systemImage: "puzzlepiece.extension")
+                    .font(.headline).foregroundStyle(.orange)
+                if checkingCandidate {
+                    Text("这是候选引擎的预检结果，不代表当前运行服务出现故障。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if !enabledPluginIssues.isEmpty {
+                    Text("有 \(enabledPluginIssues.count) 个已启用插件的依赖版本需要检查，可能无法正常工作。")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text("目前无法确认插件依赖兼容性，服务仍可使用。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                if !enabledPluginIssues.isEmpty {
+                    DisclosureGroup("查看已启用插件（\(enabledPluginIssues.count)）") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(enabledPluginIssues) { plugin in pluginCompatibilityDetail(plugin) }
+                        }
+                        .padding(.top, 5)
+                    }
+                    .font(.callout.weight(.medium))
+                }
+            }
+        }
+    }
+
+    private var warningTitle: String {
+        if checkingCandidate { return "候选插件需检查" }
+        return enabledPluginIssues.isEmpty ? "插件兼容性待确认" : "已启用插件依赖需检查"
+    }
+
     private func pluginCompatibilityDetail(_ plugin: GuardianPluginIssue) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
@@ -344,7 +384,7 @@ struct GuardianPanel: View {
                 if events.isEmpty {
                     Text("还没有特别的事发生。").font(.callout).foregroundStyle(.secondary)
                 } else {
-                    ForEach(events.reversed()) { event in
+                    ForEach((showAllEvents ? events : Array(events.suffix(5))).reversed()) { event in
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: eventIcon(event.type))
                                 .foregroundStyle(eventColor(event.type))
@@ -367,6 +407,12 @@ struct GuardianPanel: View {
                             }
                             Spacer()
                         }
+                    }
+                    if events.count > 5 {
+                        Button(showAllEvents ? "收起较早动态" : "查看更多动态（\(events.count - 5)）") {
+                            showAllEvents.toggle()
+                        }
+                        .font(.caption)
                     }
                 }
             }

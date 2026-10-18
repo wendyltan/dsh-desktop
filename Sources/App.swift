@@ -85,6 +85,7 @@ struct ContentView: View {
                 ClientConnectionOverlay(
                     state: pageState,
                     recovering: store.guardianBusy,
+                    serviceHealthy: store.guardianStatus?.up == true,
                     retry: { store.reloadWebView() },
                     recover: { showRecoveryConfirmation = true },
                     showStatus: { store.showGuardianPanel() }
@@ -151,6 +152,7 @@ struct ContentView: View {
 struct ClientConnectionOverlay: View {
     let state: ClientPageState
     let recovering: Bool
+    let serviceHealthy: Bool
     let retry: () -> Void
     let recover: () -> Void
     let showStatus: () -> Void
@@ -180,9 +182,13 @@ struct ClientConnectionOverlay: View {
                         .multilineTextAlignment(.center)
                 }
                 HStack(spacing: 10) {
-                    Button("检查并尝试恢复", action: recover)
-                        .buttonStyle(.borderedProminent)
-                    Button("重新加载", action: retry)
+                    if serviceHealthy {
+                        Button("重新加载", action: retry).buttonStyle(.borderedProminent)
+                        Button("检查并尝试恢复", action: recover)
+                    } else {
+                        Button("检查并尝试恢复", action: recover).buttonStyle(.borderedProminent)
+                        Button("重新加载", action: retry)
+                    }
                     Button("查看当前状态", action: showStatus)
                 }
             }

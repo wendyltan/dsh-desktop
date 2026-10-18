@@ -71,11 +71,21 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                ShortcutRecorder(title: "快速提问", shortcut: store.settings.quickPromptShortcut) {
-                    store.updateQuickPromptShortcut($0)
+                VStack(alignment: .leading, spacing: 4) {
+                    ShortcutRecorder(title: "快速提问", shortcut: store.settings.quickPromptShortcut) {
+                        store.updateQuickPromptShortcut($0)
+                    }
+                    if let error = store.quickPromptShortcutError {
+                        Text(error).font(.caption).foregroundStyle(.red).accessibilityLabel("快速提问快捷键错误：\(error)")
+                    }
                 }
-                ShortcutRecorder(title: "当前状态", shortcut: store.settings.guardianShortcut) {
-                    store.updateGuardianShortcut($0)
+                VStack(alignment: .leading, spacing: 4) {
+                    ShortcutRecorder(title: "当前状态", shortcut: store.settings.guardianShortcut) {
+                        store.updateGuardianShortcut($0)
+                    }
+                    if let error = store.guardianShortcutError {
+                        Text(error).font(.caption).foregroundStyle(.red).accessibilityLabel("当前状态快捷键错误：\(error)")
+                    }
                 }
                 Text("点击后按下新组合键即可修改，按 Esc 取消；改动立即生效。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -112,11 +122,19 @@ struct SettingsView: View {
                 }
                 .disabled(!usesNewSession)
                 HStack {
-                    Text(usesNewSession ? "模型列表随连接自动刷新。" : "已有会话会沿用原会话的模型与思考力度。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if usesNewSession, store.quickPromptModelsLoading {
+                        Label("正在加载模型…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
+                    } else if usesNewSession, let error = store.quickPromptModelsError {
+                        Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                            .lineLimit(2)
+                    } else {
+                        Text(usesNewSession ? "模型列表随连接自动刷新。" : "已有会话会沿用原会话的模型与思考力度。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Spacer()
                     if usesNewSession {
-                        Button("刷新模型") { store.refreshQuickPromptModels() }
+                        Button(store.quickPromptModelsError == nil ? "刷新模型" : "重试") { store.refreshQuickPromptModels() }
+                            .disabled(store.quickPromptModelsLoading)
                     }
                 }
             } header: {

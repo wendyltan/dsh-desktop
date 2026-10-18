@@ -8,6 +8,7 @@ private final class StatusStub {
     private let readySignal = DispatchSemaphore(value: 0)
     private var isReady = false
     private var approvalStatus = 200
+    private var promptSessionId: String? = "server-session-42"
 
     init(port: UInt16) throws {
         let parameters = NWParameters.tcp
@@ -32,6 +33,10 @@ private final class StatusStub {
         lock.lock(); approvalStatus = status; lock.unlock()
     }
 
+    func setPromptSessionId(_ id: String?) {
+        lock.lock(); promptSessionId = id; lock.unlock()
+    }
+
     func stop() { listener.cancel() }
 
     private func respond(_ connection: NWConnection) {
@@ -41,12 +46,14 @@ private final class StatusStub {
             let request = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             self.lock.lock(); let ready = self.isReady; self.lock.unlock()
             self.lock.lock(); let approvalStatus = self.approvalStatus; self.lock.unlock()
+            self.lock.lock(); let promptSessionId = self.promptSessionId; self.lock.unlock()
             let isApprovals = request.hasPrefix("GET /dsh-desktop-bridge/pending-approvals ")
             let isApprovalAction = request.hasPrefix("POST /dsh-desktop-bridge/approval ")
+            let isPrompt = request.hasPrefix("POST /dsh-desktop-bridge/prompt ")
             let status = isApprovals ? approvalStatus : 200
             let object: [String: Any] = isApprovals
                 ? ["ok": status == 200, "approvals": status == 200 ? [["id": "approval-1", "sessionId": "session-1", "title": "批准", "message": "工具请求", "requiresNativeHandoff": true]] : []]
-                : (isApprovalAction ? ["ok": true] : ["ok": true, "ready": ready, "protocolVersion": 1])
+                : (isApprovalAction ? ["ok": true] : (isPrompt ? (promptSessionId.map { ["ok": true, "sessionId": $0] } ?? ["ok": true]) : ["ok": true, "ready": ready, "protocolVersion": 1]))
             let body = try! JSONSerialization.data(withJSONObject: object)
             var response = Data("HTTP/1.1 \(status) OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
             response.append(body)
@@ -131,6 +138,22 @@ struct BridgeVerify {
         let (healthyStatusData, _) = try await request(path: "v1/status")
         let healthyStatus = try JSONSerialization.jsonObject(with: healthyStatusData) as? [String: Any]
         precondition(healthyStatus?["promptConnected"] as? Bool == true)
+
+        func sendPrompt() async -> Result<String, Error> {
+            await withCheckedContinuation { continuation in
+                bridge.sendPrompt("verify only", mode: "new", sessionId: nil, cwd: "/tmp", provider: nil, model: nil, effort: nil) {
+                    continuation.resume(returning: $0)
+                }
+            }
+        }
+        let sentPrompt = await sendPrompt()
+        guard case .success(let sentSessionId) = sentPrompt else { preconditionFailure("prompt response must return its server session ID") }
+        precondition(sentSessionId == "server-session-42", "new prompt must use server-returned session ID")
+        statusStub.setPromptSessionId(" \n")
+        if case .success = await sendPrompt() { preconditionFailure("prompt response must reject an empty session ID") }
+        statusStub.setPromptSessionId(nil)
+        if case .success = await sendPrompt() { preconditionFailure("prompt response must reject a missing session ID") }
+        statusStub.setPromptSessionId("server-session-42")
 
         func fetchApprovals() async -> Result<[BridgeApproval], Error> {
             await withCheckedContinuation { continuation in

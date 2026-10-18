@@ -132,6 +132,10 @@ struct GuardianResponse: Decodable {
     }
 
     var effectiveMode: String { mode ?? state?.mode ?? "unknown" }
+    var isRunningInSafeMode: Bool { up == true && effectiveMode == "safe" }
+    static func shouldRetryGuardianStatusDeep(deep: Bool, status: GuardianResponse?, error: String?) -> Bool {
+        !deep && (status?.ok == false || error != nil)
+    }
     var displayError: String? {
         if let error, !error.isEmpty { return error }
         if let rollbackError, !rollbackError.isEmpty { return rollbackError }

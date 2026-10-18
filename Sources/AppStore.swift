@@ -44,13 +44,19 @@ final class AppStore: NSObject, ObservableObject {
     @Published var balanceLoading = false
     @Published var settings: AppSettings = AppSettings.load()
     @Published var quickPromptModels: [BridgeModel] = []
+    @Published var quickPromptModelsLoading = false
+    @Published var quickPromptModelsError: String?
     @Published var quickPromptSummary: String = ""
+    @Published var quickPromptShortcutError: String?
+    @Published var guardianShortcutError: String?
     private var balanceTimer: Timer?
     private var pendingApprovals: [BridgeApproval] = []
     private var pendingApprovalError: String? = "正在连接 Harness"
     private var pendingRefreshInFlight = false
     private var sessionsRefreshInFlight = false
     private var bridgeGeneration = 0
+    private var lastSentSessionId: String?
+    private var lastSentSessionItem: NSMenuItem?
 
     /// 是否处于低余额预警。
     var balanceLow: Bool {
@@ -158,6 +164,11 @@ final class AppStore: NSObject, ObservableObject {
         let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
         ask.target = self
         menu.addItem(ask)
+        let lastSent = NSMenuItem(title: "打开刚发送的会话", action: #selector(menuOpenLastSentSession), keyEquivalent: "")
+        lastSent.target = self
+        lastSent.isEnabled = false
+        lastSentSessionItem = lastSent
+        menu.addItem(lastSent)
         let open = NSMenuItem(title: "打开客户端窗口", action: #selector(menuOpenHarness), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
@@ -360,6 +371,7 @@ final class AppStore: NSObject, ObservableObject {
     func openHarness() { showClientPanel() }
     @objc private func menuOpenHarness() { openHarness() }
     @objc private func menuQuickPrompt() { showQuickPrompt() }
+    @objc private func menuOpenLastSentSession() { openSession(lastSentSessionId) }
     @objc private func menuCheckUpdate() {
         checkUpdate(force: true)
     }
@@ -380,51 +392,88 @@ final class AppStore: NSObject, ObservableObject {
     /// 按当前设置注册全局快捷键。
     func registerHotKeys() {
         guard ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] != "1" else { return }
-        hotKeyManager.unregisterAll()
+        guard settings.quickPromptShortcut != settings.guardianShortcut else {
+            quickPromptShortcutError = "此快捷键也用于「当前状态」。"
+            guardianShortcutError = "此快捷键也用于「快速提问」。"
+            return
+        }
         if let error = hotKeyManager.register(settings.quickPromptShortcut, action: { [weak self] in
-            guard let self else { return }
-            if self.settings.quickPromptMode == "existing" {
-                self.refreshQuickPromptSessions()
-                self.refreshQuickPromptSummary(sessionId: self.quickPrompt.selectedSessionId)
-            } else {
-                self.quickPrompt.summary = ""
-            }
-            self.quickPrompt.toggle()
+            self?.toggleQuickPrompt()
         }) {
             nativeActionMessage = "快速提问快捷键：\(error)"
+            quickPromptShortcutError = error
         }
         if let error = hotKeyManager.register(settings.guardianShortcut, action: { [weak self] in
             self?.showGuardianPanel()
         }) {
             nativeActionMessage = "当前状态快捷键：\(error)"
+            guardianShortcutError = error
         }
     }
 
     func updateQuickPromptShortcut(_ shortcut: Shortcut) {
+        guard shortcut != settings.guardianShortcut else {
+            quickPromptShortcutError = "此快捷键已用于「当前状态」。"
+            return
+        }
+        if ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] != "1",
+           let error = hotKeyManager.replace(settings.quickPromptShortcut, with: shortcut, action: { [weak self] in self?.toggleQuickPrompt() }) {
+            quickPromptShortcutError = error
+            return
+        }
         settings.quickPromptShortcut = shortcut
         settings.save()
         quickPrompt.shortcutHint = shortcut.displayString
-        registerHotKeys()
+        quickPromptShortcutError = nil
     }
 
     func updateGuardianShortcut(_ shortcut: Shortcut) {
+        guard shortcut != settings.quickPromptShortcut else {
+            guardianShortcutError = "此快捷键已用于「快速提问」。"
+            return
+        }
+        if ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] != "1",
+           let error = hotKeyManager.replace(settings.guardianShortcut, with: shortcut, action: { [weak self] in self?.showGuardianPanel() }) {
+            guardianShortcutError = error
+            return
+        }
         settings.guardianShortcut = shortcut
         settings.save()
-        registerHotKeys()
+        guardianShortcutError = nil
     }
 
     /// 从 Harness 侧读取可选模型目录（用于新会话默认模型）。
     func refreshQuickPromptModels() {
-        guard let bridge = eventBridge else { return }
+        let request = quickPrompt.beginModelLoad()
+        quickPromptModelsLoading = true
+        quickPromptModelsError = nil
+        guard let bridge = eventBridge else {
+            let message = "Harness 尚未连接，连接后可重试。"
+            quickPrompt.finishModelLoad(request, result: .failure(EventBridgeError.unavailable(message)))
+            quickPromptModels = []
+            quickPromptModelsLoading = false
+            quickPromptModelsError = message
+            return
+        }
+        let generation = bridgeGeneration
         bridge.fetchModels { [weak self] result in
-            if case .success(let models) = result {
-                self?.quickPromptModels = models
+            guard let self else { return }
+            guard generation == self.bridgeGeneration else {
+                if self.quickPrompt.connected { self.refreshQuickPromptModels() }
+                return
+            }
+            guard self.quickPrompt.finishModelLoad(request, result: result) else { return }
+            self.quickPromptModelsLoading = false
+            switch result {
+            case .success(let models): self.quickPromptModels = models; self.quickPromptModelsError = nil
+            case .failure(let error): self.quickPromptModels = []; self.quickPromptModelsError = "无法读取模型列表：\(error.localizedDescription)"
             }
         }
     }
 
     func updateQuickPromptMode(_ mode: String) {
         settings.quickPromptMode = mode
+        quickPrompt.mode = mode
         settings.save()
         refreshQuickPromptHint()
         if mode == "existing" { refreshQuickPromptSessions() }
@@ -434,12 +483,15 @@ final class AppStore: NSObject, ObservableObject {
     func updateQuickPromptModel(provider: String?, model: String?) {
         settings.quickPromptProvider = provider
         settings.quickPromptModel = model
+        quickPrompt.selectedProvider = provider
+        quickPrompt.selectedModel = model
         settings.save()
         refreshQuickPromptHint()
     }
 
     func updateQuickPromptEffort(_ effort: String?) {
         settings.quickPromptEffort = effort
+        quickPrompt.effort = effort
         settings.save()
     }
 
@@ -550,7 +602,21 @@ final class AppStore: NSObject, ObservableObject {
         quickPrompt.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         quickPrompt.onSessionChange = { [weak self] sessionId in self?.refreshQuickPromptSummary(sessionId: sessionId) }
         quickPrompt.onRetrySessions = { [weak self] in self?.refreshQuickPromptSessions() }
-        quickPrompt.onSend = { [weak self] prompt, mode, sessionId, cwd, completion in
+        quickPrompt.onRetryModels = { [weak self] in self?.refreshQuickPromptModels() }
+        quickPrompt.onModeChange = { [weak self] in self?.updateQuickPromptMode($0) }
+        quickPrompt.onModelChange = { [weak self] value in
+            guard let self, let value, let model = self.quickPromptModels.first(where: { $0.id == value }) else {
+                self?.updateQuickPromptModel(provider: nil, model: nil)
+                return
+            }
+            self.updateQuickPromptModel(provider: model.provider, model: model.model)
+        }
+        quickPrompt.onEffortChange = { [weak self] in self?.updateQuickPromptEffort($0) }
+        quickPrompt.onSentSession = { [weak self] sessionId in
+            self?.lastSentSessionId = sessionId
+            self?.lastSentSessionItem?.isEnabled = true
+        }
+        quickPrompt.onSend = { [weak self] prompt, mode, sessionId, cwd, provider, model, effort, completion in
             guard let self, let bridge = self.eventBridge else {
                 completion(.failure(EventBridgeError.unavailable("事件桥不可用，草稿已保留。")))
                 return
@@ -559,9 +625,9 @@ final class AppStore: NSObject, ObservableObject {
                               mode: mode,
                               sessionId: sessionId,
                               cwd: cwd,
-                              provider: self.settings.quickPromptProvider,
-                              model: self.settings.quickPromptModel,
-                              effort: self.settings.quickPromptEffort,
+                              provider: provider,
+                              model: model,
+                              effort: effort,
                               completion: completion)
         }
 
@@ -596,7 +662,16 @@ final class AppStore: NSObject, ObservableObject {
                 let wasConnected = self.quickPrompt.connected
                 self.bridgeStatus = state
                 self.quickPrompt.connected = state.hasPrefix("事件桥已连接")
-                if wasConnected != self.quickPrompt.connected { self.bridgeGeneration += 1 }
+                if wasConnected != self.quickPrompt.connected {
+                    self.bridgeGeneration += 1
+                    if !self.quickPrompt.connected {
+                        let message = "Harness 尚未连接，连接后可重试。"
+                        self.quickPrompt.failModelLoad(message)
+                        self.quickPromptModels = []
+                        self.quickPromptModelsLoading = false
+                        self.quickPromptModelsError = message
+                    }
+                }
                 if self.quickPrompt.connected {
                     self.refreshPendingApprovals()
                     if !wasConnected { self.refreshQuickPromptSessions() }
@@ -611,13 +686,27 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func showQuickPrompt() {
+        prepareQuickPrompt()
+        quickPrompt.show()
+    }
+
+    private func prepareQuickPrompt() {
+        quickPrompt.mode = settings.quickPromptMode
+        quickPrompt.selectedProvider = settings.quickPromptProvider
+        quickPrompt.selectedModel = settings.quickPromptModel
+        quickPrompt.effort = settings.quickPromptEffort
+        if quickPrompt.models.isEmpty && !quickPrompt.modelsLoading { refreshQuickPromptModels() }
         if settings.quickPromptMode == "existing" {
             refreshQuickPromptSessions()
             refreshQuickPromptSummary(sessionId: quickPrompt.selectedSessionId)
         } else {
             quickPrompt.summary = ""
         }
-        quickPrompt.show()
+    }
+
+    private func toggleQuickPrompt() {
+        prepareQuickPrompt()
+        quickPrompt.toggle()
     }
 
     private func maybeNotifyLowBalance() {
@@ -680,6 +769,10 @@ final class AppStore: NSObject, ObservableObject {
                 }
             }
             DispatchQueue.main.async {
+                if GuardianResponse.shouldRetryGuardianStatusDeep(deep: deep, status: self.guardianStatus, error: self.guardianError) {
+                    self.refreshGuardian(deep: true)
+                    return
+                }
                 if !deep { response.retainPluginCompatibility(from: self.guardianStatus) }
                 self.guardianStatus = response
                 self.guardianError = error

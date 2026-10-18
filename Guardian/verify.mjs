@@ -1,13 +1,24 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import {
-  appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
-  symlinkSync, writeFileSync,
+  appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
+  symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+async function unusedPort() {
+  const probe = createServer()
+  const port = await new Promise((resolve, reject) => {
+    probe.once('error', reject)
+    probe.listen(0, '127.0.0.1', () => resolve(probe.address().port))
+  })
+  await new Promise((resolve) => probe.close(resolve))
+  return port
+}
 
 function verifyUpdateDowngradeGuard() {
   const home = mkdtempSync(join(tmpdir(), 'dsh-guardian-update-'))
@@ -132,6 +143,82 @@ writeFileSync(join(integration, 'marker.txt'), 'golden\n')
 try {
   verifyUpdateDowngradeGuard()
   const guardian = await import(`./guardian.mjs?verify=${Date.now()}`)
+  const guardianCLI = join(dirname(fileURLToPath(import.meta.url)), 'guardian.mjs')
+  const runGuardian = (action, port = 3080) => spawnSync(process.execPath, [guardianCLI, action, '--json'], {
+    encoding: 'utf8', env: { ...process.env, DSH_HOME: root, DSH_WEB_PORT: String(port) },
+  })
+  const lock = join(root, 'guardian', '.lock')
+  mkdirSync(lock)
+  writeFileSync(join(lock, 'pid'), String(process.pid))
+  const old = new Date(Date.now() - 360_000)
+  utimesSync(lock, old, old)
+  const blockedSnapshot = runGuardian('snapshot')
+  assert.equal(JSON.parse(blockedSnapshot.stdout).busy, true, blockedSnapshot.stderr || blockedSnapshot.stdout)
+  assert.equal(readFileSync(join(lock, 'pid'), 'utf8'), String(process.pid))
+  assert.equal(existsSync(join(root, 'guardian', 'last-known-good')), false)
+  rmSync(lock, { recursive: true })
+  assert.equal(guardian.acquireLock(), true)
+  writeFileSync(join(lock, 'owner'), 'another-owner')
+  guardian.releaseLock()
+  assert.equal(existsSync(lock), true)
+  rmSync(lock, { recursive: true })
+  mkdirSync(lock)
+  utimesSync(lock, old, old)
+  assert.equal(guardian.acquireLock(), true)
+  guardian.releaseLock()
+  assert.equal(existsSync(lock), false)
+  mkdirSync(lock)
+  writeFileSync(join(lock, 'pid'), '2147483647')
+  mkdirSync(`${lock}.reclaim`)
+  assert.equal(guardian.acquireLock(), false)
+  assert.equal(readFileSync(join(lock, 'pid'), 'utf8'), '2147483647')
+  rmSync(`${lock}.reclaim`, { recursive: true })
+  rmSync(lock, { recursive: true })
+
+  mkdirSync(lock)
+  writeFileSync(join(lock, 'pid'), '2147483647')
+  const go = join(root, 'lock-go')
+  const contenderCode = `import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const guardian = await import(pathToFileURL(process.argv[2]).href);
+console.log('ready');
+while (!existsSync(process.argv[3])) await new Promise((resolve) => setTimeout(resolve, 5));
+const acquired = guardian.acquireLock();
+console.log(String(acquired));
+if (acquired) await new Promise((resolve) => setTimeout(resolve, 300));
+guardian.releaseLock();`
+  const contenders = Array.from({ length: 3 }, () => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', contenderCode, 'contender', guardianCLI, go], {
+      env: { ...process.env, DSH_HOME: root }, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let output = ''
+    let errors = ''
+    child.stdout.on('data', (chunk) => { output += chunk })
+    child.stderr.on('data', (chunk) => { errors += chunk })
+    return { child, ready: new Promise((resolve, reject) => {
+      child.stdout.once('data', resolve)
+      child.once('error', reject)
+    }), done: new Promise((resolve, reject) => {
+      child.once('exit', (code) => code === 0 ? resolve(() => output) : reject(new Error(errors || `contender exited ${code}`)))
+      child.once('error', reject)
+    }) }
+  })
+  await Promise.all(contenders.map((item) => item.ready))
+  writeFileSync(go, '')
+  const outcomes = await Promise.all(contenders.map((item) => item.done.then((read) => read().trim().split('\n').at(-1))))
+  assert.deepEqual(outcomes.sort(), ['false', 'false', 'true'])
+
+  const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  try {
+    await new Promise((resolve, reject) => { foreign.once('spawn', resolve); foreign.once('error', reject) })
+    writeFileSync(join(root, 'logs', 'dsh-web.pid'), `${foreign.pid}\n`)
+    const stopped = runGuardian('stop', await unusedPort())
+    assert.equal(JSON.parse(stopped.stdout).ok, true, stopped.stderr || stopped.stdout)
+    process.kill(foreign.pid, 0)
+  } finally {
+    foreign.kill('SIGTERM')
+    rmSync(join(root, 'logs', 'dsh-web.pid'), { force: true })
+  }
   const boot = { rev: 'test', entries: [{ id: 'entry', url: '/entry.js' }] }
   assert.deepEqual(guardian.bootManifest(`<head><script>window.__DSH_BOOT__ = ${JSON.stringify(boot)}<\\/script></head>`), boot)
   assert.deepEqual(guardian.bootManifest(`<head><script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(boot)}<\\/script></head>`), boot)
@@ -341,7 +428,66 @@ try {
   assert.equal(guardian.forgetEngineVersion('1.1.0').removed, true)
   assert.equal(guardian.engineHistory().length, 0)
 
-  console.log('Guardian verification passed: integration, dual recovery snapshots, metadata-only diff, engine history retention, rollback/events')
+  const listenerScript = join(root, 'listener.cjs')
+  writeFileSync(listenerScript, `const http = require('node:http')
+const server = http.createServer((request, response) => {
+  response.setHeader('content-type', request.url === '/test/status' ? 'application/json' : 'text/html')
+  response.end(request.url === '/test/status' ? '{"ok":true}' : '<script>window.__DSH_BOOT__ = {"rev":"test","entries":[]}</script>')
+})
+server.listen(Number(process.argv.at(-1)), '127.0.0.1', () => process.stdout.write(String(server.address().port) + '\\n'))
+`)
+  const startListener = (entry, args = [], requestedPort = 0, runtime = process.execPath) => {
+    const child = spawn(runtime, [entry, ...args, String(requestedPort)], {
+      env: { ...process.env, DSH_HOME: root }, stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const port = new Promise((resolve, reject) => {
+      child.stdout.once('data', (data) => resolve(Number(data.toString().trim())))
+      child.once('error', reject)
+      child.once('exit', (code) => reject(new Error(`listener exited: ${code}`)))
+    })
+    return { child, port }
+  }
+  const outsider = startListener(listenerScript)
+  try {
+    const port = await outsider.port
+    const foreignStatus = runGuardian('status', port)
+    const reported = JSON.parse(foreignStatus.stdout)
+    assert.equal(reported.ok, false)
+    assert.equal(reported.up, false, foreignStatus.stderr || foreignStatus.stdout)
+    assert.equal(reported.pid, null)
+    assert.equal(reported.live, null)
+    assert.match(reported.error, /process ownership conflict/)
+    const started = runGuardian('start', port)
+    assert.equal(JSON.parse(started.stdout).ok, false, started.stderr || started.stdout)
+    writeFileSync(join(root, 'guardian', 'enabled'), 'test\n')
+    rmSync(join(root, 'guardian', 'maintenance'), { force: true })
+    const watched = runGuardian('watchdog', port)
+    assert.equal(JSON.parse(watched.stdout).ok, false, watched.stderr || watched.stdout)
+    const stopped = runGuardian('stop', port)
+    assert.equal(JSON.parse(stopped.stdout).ok, false, stopped.stderr || stopped.stdout)
+    process.kill(outsider.child.pid, 0)
+  } finally { outsider.child.kill('SIGTERM') }
+
+  writeFileSync(currentEngine, readFileSync(listenerScript))
+  writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({ active: currentEngine, version: '1.2.0', channel: 'latest' }))
+  const alternateRuntimeDir = join(root, 'alternate-runtime')
+  mkdirSync(alternateRuntimeDir)
+  const alternateNode = join(alternateRuntimeDir, 'node')
+  symlinkSync(process.execPath, alternateNode)
+  const ownedPort = await unusedPort()
+  const owned = startListener(realpathSync(currentEngine), ['--profile', 'web', '--no-open', '--host', '127.0.0.1', '--port'], ownedPort, alternateNode)
+  try {
+    const port = await owned.port
+    writeFileSync(join(root, 'logs', 'dsh-web.pid'), `${owned.child.pid}\n`)
+    const ownedStatus = JSON.parse(runGuardian('status', port).stdout)
+    assert.equal(ownedStatus.ok, true)
+    assert.equal(ownedStatus.up, true)
+    assert.equal(ownedStatus.pid, owned.child.pid)
+    const stopped = runGuardian('stop', port)
+    assert.equal(JSON.parse(stopped.stdout).ok, true, stopped.stderr || stopped.stdout)
+  } finally { owned.child.kill('SIGTERM') }
+
+  console.log('Guardian verification passed: lock ownership, process ownership, integration, recovery snapshots, engine history, rollback/events')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

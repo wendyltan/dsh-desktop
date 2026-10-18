@@ -9,11 +9,44 @@ final class QuickPromptModel: ObservableObject {
     @Published var shortcutHint = ""
     @Published var modeHint = ""
     @Published var summary = ""
+    @Published var mode = "new"
+    @Published var models: [BridgeModel] = []
+    @Published var modelsLoading = false
+    @Published var modelsError: String?
+    @Published var selectedProvider: String?
+    @Published var selectedModel: String?
+    @Published var effort: String?
     @Published var sessions: [BridgeSession] = []
     @Published var selectedSessionId: String?
     @Published var sessionsLoading = false
     @Published var sessionsError: String?
     @Published var newSessionDirectory = NSHomeDirectory()
+    private var modelRequestGeneration = 0
+
+    func beginModelLoad() -> Int {
+        modelRequestGeneration += 1
+        modelsLoading = true
+        modelsError = nil
+        return modelRequestGeneration
+    }
+
+    @discardableResult
+    func finishModelLoad(_ generation: Int, result: Result<[BridgeModel], Error>) -> Bool {
+        guard generation == modelRequestGeneration else { return false }
+        modelsLoading = false
+        switch result {
+        case .success(let models): self.models = models; modelsError = nil
+        case .failure(let error): models = []; modelsError = "无法读取模型列表：\(error.localizedDescription)"
+        }
+        return true
+    }
+
+    func failModelLoad(_ message: String) {
+        modelRequestGeneration += 1
+        modelsLoading = false
+        models = []
+        modelsError = message
+    }
 }
 
 struct QuickPromptView: View {
@@ -23,21 +56,22 @@ struct QuickPromptView: View {
     let close: () -> Void
     let sessionChanged: (String?) -> Void
     let onRetrySessions: (() -> Void)?
+    var onRetryModels: (() -> Void)? = nil
+    var onModeChange: ((String) -> Void)? = nil
+    var onModelChange: ((String?) -> Void)? = nil
+    var onEffortChange: ((String?) -> Void)? = nil
     @FocusState private var focused: Bool
 
-    private var isExistingSession: Bool { model.modeHint == "已有会话" }
+    private var isExistingSession: Bool { model.mode == "existing" }
     private var canTargetSession: Bool {
         !model.sessionsLoading && model.sessionsError == nil && !model.sessions.isEmpty
             && model.sessions.contains(where: { $0.sessionId == model.selectedSessionId })
     }
 
-    private var duplicateSessionTitles: Set<String> {
-        Set(Dictionary(grouping: model.sessions, by: \.title).filter { $0.value.count > 1 }.keys)
-    }
-
-    private func directoryLabel(for session: BridgeSession) -> String {
-        guard !session.cwd.isEmpty else { return "目录未知" }
-        return duplicateSessionTitles.contains(session.title) ? URL(fileURLWithPath: session.cwd).lastPathComponent : ""
+    func sessionLabel(for session: BridgeSession, among sessions: [BridgeSession]) -> String {
+        guard sessions.filter({ $0.title == session.title }).count > 1 else { return session.title }
+        let directory = session.cwd.isEmpty ? "目录未知" : URL(fileURLWithPath: session.cwd).lastPathComponent
+        return "\(session.title) · \(directory) · \(session.sessionId.suffix(6))"
     }
 
     private var statusIcon: String {
@@ -98,7 +132,7 @@ struct QuickPromptView: View {
 
                 if !model.summary.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
-                        Label("最近一次回复", systemImage: "clock.arrow.circlepath")
+                        Label("上一次文字回复", systemImage: "clock.arrow.circlepath")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         ScrollView {
@@ -114,6 +148,16 @@ struct QuickPromptView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
                 }
+
+                Picker("提问方式", selection: Binding(
+                    get: { model.mode },
+                    set: { model.mode = $0; onModeChange?($0) }
+                )) {
+                    Text("新会话").tag("new")
+                    Text("继续已有会话").tag("existing")
+                }
+                .pickerStyle(.segmented)
+                .disabled(model.sending)
 
                 if isExistingSession {
                     VStack(alignment: .leading, spacing: 7) {
@@ -135,14 +179,7 @@ struct QuickPromptView: View {
                             Picker("目标会话", selection: $model.selectedSessionId) {
                                 Text("选择会话").tag(String?.none)
                                 ForEach(model.sessions) { session in
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(session.title)
-                                        if !directoryLabel(for: session).isEmpty {
-                                            Text(directoryLabel(for: session))
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
+                                    Text(sessionLabel(for: session, among: model.sessions))
                                     .tag(Optional(session.sessionId))
                                 }
                             }
@@ -158,19 +195,49 @@ struct QuickPromptView: View {
                         }
                     }
                 } else {
-                    HStack(spacing: 8) {
-                        Text("新会话目录")
-                            .foregroundStyle(.secondary)
-                        TextField("绝对路径", text: $model.newSessionDirectory)
-                            .textFieldStyle(.roundedBorder)
-                        Button("选择…") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseFiles = false
-                            panel.canChooseDirectories = true
-                            panel.allowsMultipleSelection = false
-                            panel.directoryURL = URL(fileURLWithPath: model.newSessionDirectory, isDirectory: true)
-                            if panel.runModal() == .OK, let url = panel.url {
-                                model.newSessionDirectory = url.path
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Text("新会话目录").foregroundStyle(.secondary)
+                            TextField("绝对路径", text: $model.newSessionDirectory).textFieldStyle(.roundedBorder)
+                            Button("选择…") {
+                                let panel = NSOpenPanel()
+                                panel.canChooseFiles = false
+                                panel.canChooseDirectories = true
+                                panel.allowsMultipleSelection = false
+                                panel.directoryURL = URL(fileURLWithPath: model.newSessionDirectory, isDirectory: true)
+                                if panel.runModal() == .OK, let url = panel.url { model.newSessionDirectory = url.path }
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            Picker("新会话模型", selection: Binding(
+                                get: { [model.selectedProvider, model.selectedModel].compactMap { $0 }.joined(separator: ":") },
+                                set: { value in
+                                    let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+                                    model.selectedProvider = parts.count == 2 ? parts[0] : nil
+                                    model.selectedModel = parts.count == 2 ? parts[1] : nil
+                                    onModelChange?(model.selectedModel == nil ? nil : value)
+                                }
+                            )) {
+                                Text("默认模型").tag("")
+                                ForEach(model.models) { item in Text(item.name).tag(item.id) }
+                            }
+                            Picker("新会话力度", selection: Binding(
+                                get: { model.effort ?? "" },
+                                set: { model.effort = $0.isEmpty ? nil : $0; onEffortChange?(model.effort) }
+                            )) {
+                                Text("默认力度").tag("")
+                                Text("不思考").tag("off")
+                                Text("轻度思考").tag("low")
+                                Text("充分思考").tag("high")
+                                Text("最大力度").tag("max")
+                            }
+                        }
+                        if model.modelsLoading {
+                            Label("正在加载模型…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
+                        } else if let error = model.modelsError {
+                            HStack {
+                                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                                Button("重试", action: { onRetryModels?() }).disabled(onRetryModels == nil)
                             }
                         }
                     }
@@ -233,7 +300,7 @@ struct QuickPromptView: View {
             }
             .padding(20)
         }
-        .frame(width: 680, height: isExistingSession ? 450 : 490)
+        .frame(width: 680, height: 560)
         .onAppear { focused = true }
         .onChange(of: model.selectedSessionId) { sessionChanged($0) }
         .onExitCommand(perform: close)
@@ -243,9 +310,14 @@ struct QuickPromptView: View {
 final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     private let model = QuickPromptModel()
     private var panel: NSPanel?
-    var onSend: ((String, String, String?, String?, @escaping (Result<Void, Error>) -> Void) -> Void)?
+    var onSend: ((String, String, String?, String?, String?, String?, String?, @escaping (Result<String, Error>) -> Void) -> Void)?
     var onSessionChange: ((String?) -> Void)?
     var onRetrySessions: (() -> Void)?
+    var onRetryModels: (() -> Void)?
+    var onModeChange: ((String) -> Void)?
+    var onModelChange: ((String?) -> Void)?
+    var onEffortChange: ((String?) -> Void)?
+    var onSentSession: ((String) -> Void)?
     var onOpenClient: (() -> Void)?
     var onMetric: ((NativeMetric, String?) -> Void)?
 
@@ -268,6 +340,19 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         get { model.summary }
         set { model.summary = newValue }
     }
+
+    var mode: String { get { model.mode } set { model.mode = newValue } }
+    var models: [BridgeModel] { get { model.models } set { model.models = newValue } }
+    var modelsLoading: Bool { get { model.modelsLoading } set { model.modelsLoading = newValue } }
+    var modelsError: String? { get { model.modelsError } set { model.modelsError = newValue } }
+    var selectedProvider: String? { get { model.selectedProvider } set { model.selectedProvider = newValue } }
+    var selectedModel: String? { get { model.selectedModel } set { model.selectedModel = newValue } }
+    var effort: String? { get { model.effort } set { model.effort = newValue } }
+
+    func beginModelLoad() -> Int { model.beginModelLoad() }
+    @discardableResult
+    func finishModelLoad(_ generation: Int, result: Result<[BridgeModel], Error>) -> Bool { model.finishModelLoad(generation, result: result) }
+    func failModelLoad(_ message: String) { model.failModelLoad(message) }
 
     var sessions: [BridgeSession] {
         get { model.sessions }
@@ -322,7 +407,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     func close() { panel?.orderOut(nil) }
 
     private func makePanel() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 390),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
                             styleMask: [.titled, .closable, .fullSizeContentView],
                             backing: .buffered, defer: false)
         panel.title = "DeepSeek Harness · 快速提问"
@@ -338,7 +423,11 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
             openClient: { [weak self] in self?.onOpenClient?() },
             close: { [weak self] in self?.close() },
             sessionChanged: { [weak self] sessionId in self?.onSessionChange?(sessionId) },
-            onRetrySessions: { [weak self] in self?.onRetrySessions?() }
+            onRetrySessions: { [weak self] in self?.onRetrySessions?() },
+            onRetryModels: { [weak self] in self?.onRetryModels?() },
+            onModeChange: { [weak self] in self?.onModeChange?($0) },
+            onModelChange: { [weak self] in self?.onModelChange?($0) },
+            onEffortChange: { [weak self] in self?.onEffortChange?($0) }
         ))
         self.panel = panel
     }
@@ -346,32 +435,34 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     private func submit() {
         let prompt = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !model.sending else { return }
-        let existing = model.modeHint == "已有会话"
+        let existing = model.mode == "existing"
         guard !existing || (!model.sessionsLoading && model.sessionsError == nil
                             && model.sessions.contains(where: { $0.sessionId == model.selectedSessionId })) else { return }
         guard let onSend else {
             onMetric?(.quickPromptFailed, "bridge-unavailable")
             model.status = "Harness 提问桥尚未连接，草稿已保留。"
-            onOpenClient?()
             return
         }
         model.sending = true
         model.status = "正在发送…"
         onSend(prompt, existing ? "existing" : "new",
                existing ? model.selectedSessionId : nil,
-               existing ? nil : model.newSessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
+               existing ? nil : model.newSessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines),
+               existing ? nil : model.selectedProvider,
+               existing ? nil : model.selectedModel,
+               existing ? nil : model.effort) { [weak self] result in
             guard let self else { return }
             self.model.sending = false
             switch result {
-            case .success:
+            case .success(let sessionId):
                 self.onMetric?(.quickPromptSent, nil)
+                self.onSentSession?(sessionId)
                 self.model.text = ""
                 self.model.status = "已发送"
                 self.close()
             case .failure(let error):
                 self.onMetric?(.quickPromptFailed, "send-failed")
                 self.model.status = error.localizedDescription
-                self.onOpenClient?()
             }
         }
     }

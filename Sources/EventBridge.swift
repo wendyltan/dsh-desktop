@@ -60,6 +60,11 @@ private struct SummaryResponse: Decodable {
     let text: String
 }
 
+private struct PromptResponse: Decodable {
+    let ok: Bool
+    let sessionId: String
+}
+
 enum EventBridgeError: LocalizedError {
     case unavailable(String)
     case invalidResponse
@@ -171,7 +176,7 @@ final class EventBridge {
     }
 
     func sendPrompt(_ prompt: String, mode: String, sessionId: String?, cwd: String?, provider: String?, model: String?, effort: String?,
-                    completion: @escaping (Result<Void, Error>) -> Void) {
+                    completion: @escaping (Result<String, Error>) -> Void) {
         queue.async { [weak self] in
             guard let endpoint = self?.promptEndpoint else {
                 DispatchQueue.main.async {
@@ -195,13 +200,15 @@ final class EventBridge {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("Bearer \(self?.token ?? "")", forHTTPHeaderField: "Authorization")
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-            URLSession.shared.dataTask(with: request) { _, response, error in
-                let result: Result<Void, Error>
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                let result: Result<String, Error>
                 if let error {
                     result = .failure(error)
                 } else if let http = response as? HTTPURLResponse {
-                    if (200..<300).contains(http.statusCode) {
-                        result = .success(())
+                    if (200..<300).contains(http.statusCode), let data,
+                       let decoded = try? JSONDecoder().decode(PromptResponse.self, from: data),
+                       decoded.ok, !decoded.sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        result = .success(decoded.sessionId)
                     } else if http.statusCode == 409 {
                         result = .failure(EventBridgeError.noSession)
                     } else {

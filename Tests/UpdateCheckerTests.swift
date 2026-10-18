@@ -24,6 +24,15 @@ struct UpdateCheckerTests {
         var changedEngine = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"engine\":\"0.3.0\"}".utf8))
         changedEngine.retainPluginCompatibility(from: previous)
         expect(changedEngine.pluginCompatibility == nil, "engine change clears prior plugin status")
+        let runningSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":true,\"mode\":\"safe\"}".utf8))
+        let stoppedSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":false,\"mode\":\"safe\"}".utf8))
+        expect(runningSafe.isRunningInSafeMode, "safe mode warning requires a running service")
+        expect(!stoppedSafe.isRunningInSafeMode, "stopped service does not appear usable because stale mode was safe")
+        let ownershipConflict = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":false,\"up\":false,\"error\":\"foreign process owns port\"}".utf8))
+        expect(GuardianResponse.shouldRetryGuardianStatusDeep(deep: false, status: ownershipConflict, error: nil), "light refresh retries deep after ownership conflict")
+        expect(GuardianResponse.shouldRetryGuardianStatusDeep(deep: false, status: runningSafe, error: "deep status failed"), "light refresh retries deep after prior deep error")
+        expect(!GuardianResponse.shouldRetryGuardianStatusDeep(deep: false, status: runningSafe, error: nil), "healthy status allows lightweight refresh")
+        expect(!GuardianResponse.shouldRetryGuardianStatusDeep(deep: true, status: ownershipConflict, error: nil), "deep refresh is not recursively retried by the guard")
 
         // SemVer 数值比较（10 > 9，10.0.0 > 2.0.0，不按字符串排序）
         expect(UpdateChecker.isNewer("1.0.10", than: "1.0.9"), "patch 10 > 9")

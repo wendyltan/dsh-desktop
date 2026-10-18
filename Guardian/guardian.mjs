@@ -7,9 +7,9 @@ import {
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:net'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HOME = homedir()
@@ -22,6 +22,7 @@ const STATE_FILE = join(ROOT, 'state.json')
 const ENABLED_FILE = join(ROOT, 'enabled')
 const MAINTENANCE_FILE = join(ROOT, 'maintenance')
 const LOCK_DIR = join(ROOT, '.lock')
+const LOCK_RECLAIM_DIR = `${LOCK_DIR}.reclaim`
 const LOG_DIR = join(DSH_HOME, 'logs')
 const LOG_FILE = join(LOG_DIR, 'dsh-web.log')
 const PID_FILE = join(LOG_DIR, 'dsh-web.pid')
@@ -43,6 +44,7 @@ const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
 const ENGINE_STATE_FILE = join(ROOT, 'engine.json')
 const ENGINE_ROOT = join(ROOT, 'engines')
 const MAX_RETAINED_ENGINES = 2
+const lockOwner = randomUUID()
 
 mkdirSync(ROOT, { recursive: true })
 mkdirSync(LOG_DIR, { recursive: true })
@@ -232,18 +234,38 @@ function isInsideDshHome(path) {
 }
 
 function acquireLock() {
-  try { mkdirSync(LOCK_DIR); writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid)); return true } catch {}
   try {
-    if (Date.now() - statSync(LOCK_DIR).mtimeMs > 300_000) {
+    mkdirSync(LOCK_DIR)
+    writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid))
+    writeFileSync(join(LOCK_DIR, 'owner'), lockOwner)
+    return true
+  } catch {}
+  // shortcut: abrupt termination may leave this guard and require verified manual cleanup, use a kernel lock if automatic recovery is needed.
+  try { mkdirSync(LOCK_RECLAIM_DIR) } catch { return false }
+  try {
+    let pid = 0
+    try { pid = Number(readFileSync(join(LOCK_DIR, 'pid'), 'utf8')) } catch {}
+    if (Number.isInteger(pid) && pid > 1) {
+      try { process.kill(pid, 0); return false } catch (error) {
+        if (error.code !== 'ESRCH') return false
+      }
+    } else if (Date.now() - statSync(LOCK_DIR).mtimeMs < 5_000) return false
+    rmSync(LOCK_DIR, { recursive: true, force: true })
+    mkdirSync(LOCK_DIR)
+    writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid))
+    writeFileSync(join(LOCK_DIR, 'owner'), lockOwner)
+    return true
+  } catch { return false }
+  finally { rmSync(LOCK_RECLAIM_DIR, { recursive: true, force: true }) }
+}
+function releaseLock() {
+  try {
+    if (readFileSync(join(LOCK_DIR, 'owner'), 'utf8') === lockOwner
+        && Number(readFileSync(join(LOCK_DIR, 'pid'), 'utf8')) === process.pid) {
       rmSync(LOCK_DIR, { recursive: true, force: true })
-      mkdirSync(LOCK_DIR)
-      writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid))
-      return true
     }
   } catch {}
-  return false
 }
-function releaseLock() { rmSync(LOCK_DIR, { recursive: true, force: true }) }
 
 function resolveDshBin() {
   const selected = readJson(ENGINE_STATE_FILE)
@@ -1252,14 +1274,48 @@ async function isUp() {
 }
 
 function pidFromFile() { return Number(readFileSync(PID_FILE, 'utf8').trim()) }
+function portListeners() {
+  const result = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' })
+  if (result.error || result.status > 1) throw new Error(`cannot inspect port ${PORT} listeners`)
+  return result.stdout.trim().split(/\s+/).map(Number).filter((pid) => Number.isInteger(pid) && pid > 1)
+}
+function ownedDshProcess(pid) {
+  const result = spawnSync('ps', ['-wwE', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' })
+  if (result.status !== 0) return false
+  const commandLine = result.stdout.trim()
+  const home = commandLine.match(/(?:^|\s)DSH_HOME=([^\s]+)/)?.[1]
+  if (home ? home !== DSH_HOME : DSH_HOME !== join(HOME, '.dsh')) return false
+  const runtime = commandLine.match(/^(\S+)\s/)?.[1]
+  if (!runtime || basename(runtime) !== basename(process.execPath)) return false
+  let entries
+  try { entries = [resolveDshBin(), ...retainedEngines().map((item) => item.active)] } catch { return false }
+  return entries.some((entry) => {
+    try { entry = realpathSync(entry) } catch { return false }
+    return ['web', 'safe'].some((profile) => commandLine.startsWith(
+      `${runtime} ${entry} --profile ${profile} --no-open --host ${HOST} --port ${PORT} `))
+  })
+}
+
+function assertOwnedProcess(pid) {
+  try { process.kill(pid, 0) } catch (error) { if (error.code === 'ESRCH') return false }
+  if (!ownedDshProcess(pid)) throw new Error(`process ownership conflict on port ${PORT} (PID ${pid}); refusing to signal it`)
+  return true
+}
+
+function assertOwnedProcesses(pids) {
+  for (const pid of pids) assertOwnedProcess(pid)
+}
+
 async function stopRunning() {
   let pid = 0
   try { pid = pidFromFile() } catch {}
-  if (pid > 1) { try { process.kill(pid, 'SIGTERM') } catch {} }
-  const byPort = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim().split(/\s+/)
-  for (const value of byPort) {
-    const found = Number(value)
-    if (found > 1 && found !== pid) { try { process.kill(found, 'SIGTERM') } catch {} }
+  const listeners = portListeners()
+  assertOwnedProcesses(listeners)
+  const candidates = [...new Set([...listeners, ...(pid > 1 && ownedDshProcess(pid) ? [pid] : [])])]
+  for (const found of candidates) {
+    // shortcut: PID validation and signalling are not atomic on macOS; use a process handle if Node exposes one.
+    if (!assertOwnedProcess(found)) continue
+    try { process.kill(found, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
   }
   for (let n = 0; n < 30 && await isUp(); n += 1) await new Promise((accept) => setTimeout(accept, 200))
 }
@@ -1269,7 +1325,7 @@ function spawnProfile(profileName) {
   const logOffset = existsSync(LOG_FILE) ? statSync(LOG_FILE).size : 0
   const out = openSync(LOG_FILE, 'a')
   const child = spawn(process.execPath, [dshEntry(), '--profile', profileName, '--no-open', '--host', HOST, '--port', String(PORT)], {
-    detached: true, env: process.env, stdio: ['ignore', out, out],
+    detached: true, env: { ...process.env, DSH_HOME }, stdio: ['ignore', out, out],
   })
   closeSync(out)
   child.unref()
@@ -1371,6 +1427,7 @@ async function restartSafely() {
 async function watchdog() {
   if (!existsSync(ENABLED_FILE)) return { ok: true, action: 'disabled' }
   if (existsSync(MAINTENANCE_FILE)) return { ok: true, action: 'maintenance' }
+  assertOwnedProcesses(portListeners())
   if (await isUp()) return { ok: true, action: 'healthy' }
   if (activeEngineSelection()?.channel === 'alpha') {
     const rollback = await rollbackAlphaToLatest()
@@ -1387,16 +1444,25 @@ async function watchdog() {
 async function status() {
   let up = false
   let live = null
-  try { live = await healthFromLog(BASE, { checkBundles: false, recordAccess: true }); up = true } catch {}
   let pid = null
-  if (up) {
-    const found = spawnSync('lsof', ['-tiTCP:' + PORT, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim()
-    const parsed = Number(found.split(/\s+/)[0])
-    if (parsed > 1) pid = parsed
+  let error = null
+  let listeners = []
+  try { listeners = portListeners(); assertOwnedProcesses(listeners) }
+  catch (cause) { error = String(cause.message ?? cause) }
+  if (!error && listeners.length) {
+    try { live = await healthFromLog(BASE, { checkBundles: false, recordAccess: true }) } catch {}
   }
+  if (live !== null) {
+    try {
+      listeners = portListeners()
+      assertOwnedProcesses(listeners)
+      if (listeners.length) { up = true; pid = listeners[0] }
+    } catch (cause) { error = String(cause.message ?? cause) }
+  }
+  if (!up) live = null
   const selectedEngine = activeEngineSelection()
   return {
-    ok: true, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION,
+    ok: error === null, error, guardianVersion: GUARDIAN_VERSION, protocolVersion: PROTOCOL_VERSION,
     capabilities: CAPABILITIES, up, url: BASE, state: state(), lastKnownGood: existsSync(LKG),
     engine: selectedEngine?.version ?? detectEngineVersion(), engineChannel: selectedEngine?.channel ?? null,
     pid, integrations: guardianIntegrations(), live, pluginCompatibility: pluginCompatibility(),
@@ -1429,7 +1495,6 @@ async function main() {
     if (!result.ok) process.exitCode = 1
     return
   }
-  if (command === 'snapshot') return output(snapshot())
   if (command === 'disable') { rmSync(ENABLED_FILE, { force: true }); return output({ ok: true, enabled: false }) }
   if (command === 'enable') {
     writeFileSync(ENABLED_FILE, now() + '\n')
@@ -1438,8 +1503,10 @@ async function main() {
   }
   if (!acquireLock()) return output({ ok: false, busy: true })
   try {
+    if (command === 'snapshot') return output(snapshot())
     if (command === 'watchdog') return output(await watchdog())
     if (command === 'start') {
+      assertOwnedProcesses(portListeners())
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
       if (await isUp()) return output({ ok: true, alreadyRunning: true, ...(await status()) })
@@ -1507,9 +1574,9 @@ async function main() {
       return output(await startSafe('requested manually'))
     }
     if (command === 'stop') {
+      await stopRunning()
       rmSync(ENABLED_FILE, { force: true })
       writeFileSync(MAINTENANCE_FILE, now() + '\n')
-      await stopRunning()
       return output({ ok: true, stopped: true })
     }
     throw new Error(`unknown command: ${command}`)
@@ -1526,11 +1593,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 }
 
 export {
-  appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
+  acquireLock, appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
   health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
   sessionRollbackCompatibility, sessionRestoreCompatibility, sessionFormatVersion, sessionPersistenceRoot, pluginCompatibility,
-  preflight,
+  preflight, releaseLock,
   switchEngineVersion, validateProfileFiles,
   logTextFromByteOffset, makeScratch, recordWebAccessURL,
   webAccessURLFromLogs, webAccessURLFromText, webAccessURLsFromText,
