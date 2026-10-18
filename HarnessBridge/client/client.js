@@ -61,22 +61,22 @@ window.__ModuleLoader__.load({
 
         const openPanel = (event) => {
           const panelId = event.detail?.panelId
-          const requestId = event.detail?.requestId
-          if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(requestId)) {
-            acknowledgePanel({ panelId: typeof panelId === 'string' ? panelId : '', requestId: '', opened: false, error: '插件管理页请求编号无效。' })
+          const attemptId = event.detail?.attemptId
+          if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(attemptId)) {
+            acknowledgePanel({ panelId: typeof panelId === 'string' ? panelId : '', attemptId: '', opened: false, error: '插件管理页请求编号无效。' })
             return
           }
           if (panelId !== 'plugins') {
-            acknowledgePanel({ panelId: typeof panelId === 'string' ? panelId : '', requestId, opened: false, error: '只支持打开插件管理面板。' })
+            acknowledgePanel({ panelId: typeof panelId === 'string' ? panelId : '', attemptId, opened: false, error: '只支持打开插件管理面板。' })
             return
           }
           try {
             Promise.resolve(ctx.layout.selectPanel('plugins')).then(
-              () => acknowledgePanel({ panelId, requestId, opened: true }),
-              () => acknowledgePanel({ panelId, requestId, opened: false, error: '无法打开插件管理面板，请在工作区中手动打开。' }),
+              () => acknowledgePanel({ panelId, attemptId, opened: true }),
+              () => acknowledgePanel({ panelId, attemptId, opened: false, error: '无法打开插件管理面板，请在工作区中手动打开。' }),
             )
           } catch {
-            acknowledgePanel({ panelId, requestId, opened: false, error: '无法打开插件管理面板，请在工作区中手动打开。' })
+            acknowledgePanel({ panelId, attemptId, opened: false, error: '无法打开插件管理面板，请在工作区中手动打开。' })
           }
         }
 

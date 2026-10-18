@@ -40,14 +40,10 @@ struct WorkspacePanelRequest: Equatable, Identifiable {
         }
     }
 
-    func acceptsAcknowledgement(_ value: String) -> Bool {
-        Self.isValidRequestId(value) && requestId == value
-    }
-
-    func acceptsAcknowledgement(panelId: String, requestId: String?, dispatchedRequestId: String?) -> Bool {
+    func acceptsAttemptAcknowledgement(panelId: String, attemptId: String?, dispatchedAttemptId: String?) -> Bool {
         guard panelId == self.panelId, panelId == "plugins",
-              let requestId, requestId == dispatchedRequestId else { return false }
-        return acceptsAcknowledgement(requestId)
+              let attemptId, attemptId == dispatchedAttemptId else { return false }
+        return Self.isValidRequestId(attemptId)
     }
 }
 

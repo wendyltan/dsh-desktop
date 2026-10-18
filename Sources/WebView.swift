@@ -76,7 +76,7 @@ struct WebView: NSViewRepresentable {
         private var dispatchedSessionId: String?
         private var sessionTimeout: DispatchWorkItem?
         private var pendingPanelRequest: WorkspacePanelRequest?
-        private var dispatchedPanelRequestId: String?
+        private var dispatchedPanelAttemptId: String?
         private var panelTimeout: DispatchWorkItem?
         var clientReady = false
 
@@ -141,16 +141,16 @@ struct WebView: NSViewRepresentable {
             }
             guard let request = pendingPanelRequest,
                   let panelId = body["panelId"] as? String,
-                  let requestId = body["requestId"] as? String,
-                  request.acceptsAcknowledgement(
+                  let attemptId = body["attemptId"] as? String,
+                  request.acceptsAttemptAcknowledgement(
                     panelId: panelId,
-                    requestId: requestId,
-                    dispatchedRequestId: dispatchedPanelRequestId
+                    attemptId: attemptId,
+                    dispatchedAttemptId: dispatchedPanelAttemptId
                   ) else { return }
-            if body["opened"] as? Bool == true { finishPanelRequest(requestId) }
+            if body["opened"] as? Bool == true { finishPanelRequest(request.requestId) }
             else {
                 finishPanelRequest(
-                    requestId,
+                    request.requestId,
                     error: body["error"] as? String ?? "无法打开插件管理面板，请在工作区中手动打开。"
                 )
             }
@@ -171,7 +171,7 @@ struct WebView: NSViewRepresentable {
         private func finishPanelRequest(_ requestId: String, error: String? = nil) {
             guard pendingPanelRequest?.requestId == requestId else { return }
             pendingPanelRequest = nil
-            dispatchedPanelRequestId = nil
+            dispatchedPanelAttemptId = nil
             panelTimeout?.cancel()
             panelTimeout = nil
             DispatchQueue.main.async { [weak self] in
@@ -292,7 +292,7 @@ struct WebView: NSViewRepresentable {
             sessionTimeout = nil
         }
 
-        func resetDispatchedPanelRequest() { dispatchedPanelRequestId = nil }
+        func resetDispatchedPanelRequest() { dispatchedPanelAttemptId = nil }
 
         func openPanel(_ request: WorkspacePanelRequest?, in webView: WKWebView) {
             guard let request else {
@@ -309,7 +309,7 @@ struct WebView: NSViewRepresentable {
             if pendingPanelRequest?.requestId != request.requestId {
                 panelTimeout?.cancel()
                 pendingPanelRequest = request
-                dispatchedPanelRequestId = nil
+                dispatchedPanelAttemptId = nil
                 let requestId = request.requestId
                 let timeout = DispatchWorkItem { [weak self] in
                     guard self?.pendingPanelRequest?.requestId == requestId else { return }
@@ -366,16 +366,20 @@ struct WebView: NSViewRepresentable {
         private func dispatchPendingPanel(in webView: WKWebView) {
             guard let request = pendingPanelRequest,
                   clientReady,
-                  dispatchedPanelRequestId != request.requestId,
+                  dispatchedPanelAttemptId == nil,
                   !webView.isLoading,
-                  webView.url.map({ Self.isSameOrigin($0, as: lastURL) }) == true,
-                  let data = try? JSONSerialization.data(withJSONObject: ["panelId": request.panelId, "requestId": request.requestId]),
+                  webView.url.map({ Self.isSameOrigin($0, as: lastURL) }) == true else { return }
+            let attemptId = UUID().uuidString.lowercased()
+            guard let data = try? JSONSerialization.data(withJSONObject: ["panelId": request.panelId, "attemptId": attemptId]),
                   let payload = String(data: data, encoding: .utf8) else { return }
-            dispatchedPanelRequestId = request.requestId
+            dispatchedPanelAttemptId = attemptId
+            let logicalRequestId = request.requestId
             webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('dsh-desktop-open-panel', { detail: \(payload) }));") { [weak self] _, error in
                 guard error == nil else {
                     DispatchQueue.main.async {
-                        self?.finishPanelRequest(request.requestId, error: "客户端页面拒绝了插件管理页导航，请刷新后重试。")
+                        guard self?.pendingPanelRequest?.requestId == logicalRequestId,
+                              self?.dispatchedPanelAttemptId == attemptId else { return }
+                        self?.finishPanelRequest(logicalRequestId, error: "客户端页面拒绝了插件管理页导航，请刷新后重试。")
                     }
                     return
                 }
