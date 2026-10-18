@@ -1,7 +1,7 @@
 # Native Control Center and Plugin Safety Design
 
 **Date:** 2026-10-18
-**Status:** Approved for isolated implementation; human visual acceptance pending
+**Status:** Isolated candidate prepared (`0.6.0`); human acceptance pending
 
 ## Product Decision
 
