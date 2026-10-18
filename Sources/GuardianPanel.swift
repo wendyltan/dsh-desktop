@@ -204,13 +204,16 @@ struct GuardianPanel: View {
                 let unresolved = compatibility.checked ? enabled.filter { !$0.unresolvedFindings.isEmpty } : []
                 card {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label(compatibility.scope == "candidate" ? "候选引擎预检" : "当前引擎检查", systemImage: "puzzlepiece.extension")
+                        Label(compatibility.scopeLabel, systemImage: "puzzlepiece.extension")
                             .font(.headline)
                         Text("引擎版本：\(compatibility.engineVersion ?? "未识别")")
                         Text("检查时间：\(formatGuardianDate(compatibility.checkedAt))")
                             .font(.caption).foregroundStyle(.secondary)
                         if compatibility.scope == "candidate" {
                             Text("这是候选引擎的预检结果；当前运行服务保持原状态。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        } else if compatibility.scope != "current" {
+                            Text("无法确认这组结果对应的引擎范围，不应据此判断当前服务是否兼容。")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         if !compatibility.checked {
@@ -247,7 +250,7 @@ struct GuardianPanel: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
-            Button("在工作区管理插件") { store.openHarness() }
+            Button("在工作区管理插件") { store.openPluginManager() }
                 .buttonStyle(.borderedProminent)
                 .disabled(!isRunning)
             Text("插件启用、停用和安装仍由 Harness 工作区管理。")

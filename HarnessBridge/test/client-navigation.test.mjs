@@ -5,14 +5,18 @@ import vm from 'node:vm'
 
 const bundle = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 
-function fixture({ openSession = (id, sessions) => { sessions.select(id) }, phase = 'ready' } = {}) {
+function fixture({ openSession = (id, sessions) => { sessions.select(id) }, selectPanel = () => {}, phase = 'ready' } = {}) {
   const messages = []
+  const panelMessages = []
   const listeners = new Map()
   const timers = new Map()
   let nextTimer = 0
   let teardown
   const window = {
-    webkit: { messageHandlers: { dshDesktopOpenSession: { postMessage: (message) => messages.push(message) } } },
+    webkit: { messageHandlers: {
+      dshDesktopOpenSession: { postMessage: (message) => messages.push(message) },
+      dshDesktopOpenPanel: { postMessage: (message) => panelMessages.push(message) },
+    } },
     __ModuleLoader__: { load: (registration) => { window.__ModuleLoader__.registered = registration } },
     addEventListener: (name, callback) => listeners.set(name, callback),
     removeEventListener: (name) => listeners.delete(name),
@@ -46,13 +50,15 @@ function fixture({ openSession = (id, sessions) => { sessions.select(id) }, phas
   }
   const ctx = {
     uiWorkspace: { openSession: (id) => openSession(id, sessions) },
+    layout: { selectPanel },
     sessions,
     effect(callback) { teardown = callback() },
   }
   plugin.apply(ctx)
   return {
-    messages, timers, sessions, window,
+    messages, panelMessages, timers, sessions, window,
     open(sessionId) { window.dispatchEvent({ type: 'dsh-desktop-open-session', detail: { sessionId } }) },
+    openPanel(panelId) { window.dispatchEvent({ type: 'dsh-desktop-open-panel', detail: { panelId } }) },
     expire() { for (const callback of timers.values()) callback() },
     close() { teardown?.() },
   }
@@ -91,4 +97,32 @@ test('waits for the official catalog before selecting a session during startup',
   assert.equal(page.messages.length, 1)
   page.sessions.ready()
   assert.equal(page.messages.at(-1).opened, true)
+})
+
+test('selects the official plugins panel and acknowledges the native request', async () => {
+  const selected = []
+  const page = fixture({ selectPanel: (id) => selected.push(id) })
+  assert.equal(page.panelMessages[0]?.ready, true)
+  page.openPanel('plugins')
+  await Promise.resolve()
+  assert.deepEqual(selected, ['plugins'])
+  assert.equal(page.panelMessages.at(-1).panelId, 'plugins')
+  assert.equal(page.panelMessages.at(-1).opened, true)
+})
+
+test('rejects unsupported workspace panel requests', () => {
+  const selected = []
+  const page = fixture({ selectPanel: (id) => selected.push(id) })
+  page.openPanel('settings')
+  assert.deepEqual(selected, [])
+  assert.equal(page.panelMessages.at(-1)?.opened, false)
+  assert.match(page.panelMessages.at(-1)?.error ?? '', /面板/u)
+})
+
+test('reports when the official workspace panel selection fails', async () => {
+  const page = fixture({ selectPanel: () => Promise.reject(new Error('panel unavailable')) })
+  page.openPanel('plugins')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(page.panelMessages.at(-1)?.opened, false)
+  assert.match(page.panelMessages.at(-1)?.error ?? '', /插件/u)
 })

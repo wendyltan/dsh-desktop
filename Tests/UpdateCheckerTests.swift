@@ -32,6 +32,7 @@ struct UpdateCheckerTests {
         let compatibilityJSON = #"{"ok":true,"pluginCompatibility":{"scope":"candidate","engineVersion":"0.4.0-rc.1","checkedAt":"2026-10-18T00:00:00.000Z","checked":true,"issues":[{"id":"test-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"missing-package","required":"^1.0.0","actual":null,"classification":"unresolved"}]}]}}"#
         let compatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(compatibilityJSON.utf8))
         expect(compatibilityResponse.pluginCompatibility?.scope == "candidate", "candidate compatibility scope decodes")
+        expect(compatibilityResponse.pluginCompatibility?.scopeLabel == "候选引擎", "candidate compatibility scope is labeled explicitly")
         expect(compatibilityResponse.pluginCompatibility?.engineVersion == "0.4.0-rc.1", "compatibility engine version decodes")
         expect(compatibilityResponse.pluginCompatibility?.checkedAt == "2026-10-18T00:00:00.000Z", "compatibility check time decodes")
         expect(compatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == "unresolved", "unresolved dependency classification decodes")
@@ -41,6 +42,10 @@ struct UpdateCheckerTests {
         let legacyCompatibilityJSON = #"{"ok":true,"pluginCompatibility":{"checked":true,"issues":[{"id":"legacy-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"legacy-dependency","required":"^1.0.0","actual":"2.0.0"}]}]}}"#
         let legacyCompatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(legacyCompatibilityJSON.utf8))
         expect(legacyCompatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == nil, "legacy dependency without classification decodes")
+        let unknownScope = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data(#"{"checked":true,"issues":[]}"#.utf8))
+        expect(unknownScope.scopeLabel == "检查范围无法确认", "missing compatibility scope stays unknown")
+        let currentScope = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data(#"{"scope":"current","checked":true,"issues":[]}"#.utf8))
+        expect(currentScope.scopeLabel == "当前引擎", "current compatibility scope is labeled explicitly")
         let runningSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":true,\"mode\":\"safe\"}".utf8))
         let stoppedSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":false,\"mode\":\"safe\"}".utf8))
         expect(runningSafe.isRunningInSafeMode, "safe mode warning requires a running service")

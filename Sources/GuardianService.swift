@@ -86,6 +86,14 @@ struct GuardianPluginCompatibility: Decodable {
     let checkedAt: String?
     let checked: Bool
     let issues: [GuardianPluginIssue]
+
+    var scopeLabel: String {
+        switch scope {
+        case "current": return "当前引擎"
+        case "candidate": return "候选引擎"
+        default: return "检查范围无法确认"
+        }
+    }
 }
 
 struct GuardianRecoverySnapshot: Decodable, Identifiable {

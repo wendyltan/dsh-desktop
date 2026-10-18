@@ -16,6 +16,7 @@ final class AppStore: NSObject, ObservableObject {
 
     @Published var bridgeStatus = "事件桥尚未启动"
     @Published var pendingSessionId: String?
+    @Published var pendingWorkspacePanel: String?
     @Published var nativeTaskStatus = "暂无任务事件"
     @Published var nativeActionMessage = ""
     @Published var nativeMetrics = NativeMetricsSnapshot.empty()
@@ -368,6 +369,11 @@ final class AppStore: NSObject, ObservableObject {
         ))
     }
     func openHarness() { showClientPanel() }
+    func openPluginManager() {
+        nativeActionMessage = ""
+        pendingWorkspacePanel = "plugins"
+        showClientPanel()
+    }
     @objc private func menuOpenHarness() { openHarness() }
     @objc private func menuQuickPrompt() { showQuickPrompt() }
     @objc private func menuOpenLastSentSession() { openSession(lastSentSessionId) }

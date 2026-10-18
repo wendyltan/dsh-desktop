@@ -69,12 +69,21 @@ struct ContentView: View {
                 url: ServerManager.clientURL,
                 reloadToken: store.reloadToken,
                 sessionToOpen: store.pendingSessionId,
+                panelToOpen: store.pendingWorkspacePanel,
                 onSessionOpened: {
                     store.pendingSessionId = nil
                     store.nativeActionMessage = ""
                 },
                 onSessionOpenFailed: { error in
                     store.pendingSessionId = nil
+                    store.nativeActionMessage = error
+                },
+                onPanelOpened: {
+                    store.pendingWorkspacePanel = nil
+                    store.nativeActionMessage = ""
+                },
+                onPanelOpenFailed: { error in
+                    store.pendingWorkspacePanel = nil
                     store.nativeActionMessage = error
                 },
                 loadState: $pageState
