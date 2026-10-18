@@ -153,7 +153,7 @@ struct GuardianPanel: View {
                 }
             }
         }
-        .frame(minWidth: 820, idealWidth: 960, minHeight: 540, idealHeight: 680)
+        .frame(minWidth: 960, idealWidth: 960, minHeight: 540, idealHeight: 680)
         .onExitCommand(perform: close)
         .alert(item: $activeAlert) { alert in
             Alert(
@@ -832,7 +832,7 @@ final class GuardianPanelController: NSObject, NSWindowDelegate, ObservableObjec
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
-        panel.minSize = NSSize(width: 820, height: 540)
+        panel.minSize = NSSize(width: 960, height: 540)
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self
