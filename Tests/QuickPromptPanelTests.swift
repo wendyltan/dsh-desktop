@@ -63,6 +63,12 @@ struct QuickPromptPanelTests {
         closePanel.close()
         expect(closeModel?.sentSessionId == nil, "closing the panel dismisses the transient success state")
 
+        let redClosePanel = QuickPromptPanelController()
+        let redCloseModel = Mirror(reflecting: redClosePanel).children.first(where: { $0.label == "model" })?.value as? QuickPromptModel
+        redCloseModel?.completeSend(to: second.sessionId, submittedText: "")
+        redClosePanel.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: NSWindow()))
+        expect(redCloseModel?.sentSessionId == nil, "red window close dismisses the transient success state")
+
         panel.sessions = [first, second]
         panel.selectedSessionId = second.sessionId
         panel.sessions = [first, second]

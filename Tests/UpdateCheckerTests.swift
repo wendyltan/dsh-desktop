@@ -53,6 +53,10 @@ struct UpdateCheckerTests {
         expect(candidateMismatch.mismatchRecommendation?.contains("是否继续使用候选引擎") == true, "candidate mismatch recommendation supports a candidate continuation decision")
         expect(currentMismatch.mismatchRecommendation?.contains("当前引擎") == true && currentMismatch.mismatchRecommendation?.contains("候选") == false, "current mismatch recommendation stays accurate to the current engine")
         expect(unknownMismatch.mismatchRecommendation?.contains("检查范围无法确认") == true && unknownMismatch.mismatchRecommendation?.contains("候选") == false, "unknown scope recommendation remains explicit and candidate-neutral")
+        var candidateToClear: GuardianPluginCompatibility? = candidateMismatch
+        var deepRefreshRequested = false
+        GuardianPluginCompatibility.prepareCurrentRefresh(candidate: &candidateToClear) { deepRefreshRequested = $0 }
+        expect(candidateToClear == nil && deepRefreshRequested, "current compatibility refresh clears candidate priority before requesting a deep refresh")
         let firstPanelRequest = WorkspacePanelRequest(panelId: "plugins")
         let retryPanelRequest = WorkspacePanelRequest(panelId: "plugins")
         expect(firstPanelRequest.requestId != retryPanelRequest.requestId, "plugin panel retries use unique request identifiers")

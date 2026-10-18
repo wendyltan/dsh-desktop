@@ -94,6 +94,7 @@ struct WebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             loadState.wrappedValue = .loading
             clientReady = false
+            dispatchedPanelAttemptId = nil
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

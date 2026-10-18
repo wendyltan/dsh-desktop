@@ -448,6 +448,10 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         panel?.orderOut(nil)
     }
 
+    func windowWillClose(_ notification: Notification) {
+        model.dismissSuccess()
+    }
+
     func openSentSession(_ sessionId: String) {
         onOpenSession?(sessionId)
         close()

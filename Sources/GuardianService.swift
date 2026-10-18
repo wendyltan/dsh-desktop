@@ -87,6 +87,11 @@ struct GuardianPluginCompatibility: Decodable {
     let checked: Bool
     let issues: [GuardianPluginIssue]
 
+    static func prepareCurrentRefresh(candidate: inout GuardianPluginCompatibility?, requestRefresh: (Bool) -> Void) {
+        candidate = nil
+        requestRefresh(true)
+    }
+
     var scopeLabel: String {
         switch scope {
         case "current": return "当前引擎"

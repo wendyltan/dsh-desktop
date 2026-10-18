@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>WKWebView navigation lifecycle test</title>
+<script>
+  const panel = window.webkit.messageHandlers.dshDesktopOpenPanel;
+  window.addEventListener('dsh-desktop-open-panel', (event) => {
+    window.webkit.messageHandlers.testPanel.postMessage({ attemptId: event.detail.attemptId });
+  });
+  window.addEventListener('dsh-test-ack-panel', (event) => {
+    panel.postMessage({ panelId: 'plugins', attemptId: event.detail.attemptId, opened: event.detail.opened });
+  });
+  panel.postMessage({ ready: true });
+</script>

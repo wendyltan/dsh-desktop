@@ -216,6 +216,10 @@ struct GuardianPanel: View {
                             Text("无法确认这组结果对应的引擎范围，不应据此判断当前服务是否兼容。")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
+                        if compatibility.scope == "candidate" {
+                            Button("重新检查当前引擎") { store.recheckCurrentEnginePluginCompatibility() }
+                                .buttonStyle(.bordered)
+                        }
                         if !compatibility.checked {
                             Text("这次无法确认插件兼容状态。建议在工作区核对插件状态。")
                                 .font(.callout).foregroundStyle(.orange)

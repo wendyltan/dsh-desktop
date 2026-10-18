@@ -804,6 +804,12 @@ final class AppStore: NSObject, ObservableObject {
         }
     }
 
+    func recheckCurrentEnginePluginCompatibility() {
+        GuardianPluginCompatibility.prepareCurrentRefresh(candidate: &candidatePluginCompatibility) { deep in
+            self.refreshGuardian(deep: deep)
+        }
+    }
+
     private func runGuardian(_ command: String, args: [String] = [], success: String, reloadWeb: Bool = false) {
         guardianBusy = true
         guardianError = nil
