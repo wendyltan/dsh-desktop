@@ -94,6 +94,15 @@ struct GuardianPluginCompatibility: Decodable {
         default: return "检查范围无法确认"
         }
     }
+
+    var mismatchRecommendation: String? {
+        guard checked, issues.contains(where: { $0.enabled && !$0.confirmedMismatches.isEmpty }) else { return nil }
+        switch scope {
+        case "current": return "建议在工作区管理这些插件，核对它们与当前引擎的兼容情况。"
+        case "candidate": return "建议在工作区管理这些插件，再决定是否继续使用候选引擎。"
+        default: return "检查范围无法确认；建议在工作区核对这些插件后重新检查。"
+        }
+    }
 }
 
 struct GuardianRecoverySnapshot: Decodable, Identifiable {

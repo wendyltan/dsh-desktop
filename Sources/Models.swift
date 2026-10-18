@@ -22,6 +22,35 @@ enum ControlCenterSection: String, CaseIterable, Identifiable {
     }
 }
 
+struct WorkspacePanelRequest: Equatable, Identifiable {
+    let requestId: String
+    let panelId: String
+
+    var id: String { requestId }
+
+    init(panelId: String) {
+        requestId = UUID().uuidString.lowercased()
+        self.panelId = panelId
+    }
+
+    static func isValidRequestId(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 128 else { return false }
+        return value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95
+        }
+    }
+
+    func acceptsAcknowledgement(_ value: String) -> Bool {
+        Self.isValidRequestId(value) && requestId == value
+    }
+
+    func acceptsAcknowledgement(panelId: String, requestId: String?, dispatchedRequestId: String?) -> Bool {
+        guard panelId == self.panelId, panelId == "plugins",
+              let requestId, requestId == dispatchedRequestId else { return false }
+        return acceptsAcknowledgement(requestId)
+    }
+}
+
 /// DeepSeek 账户余额接口 (`GET /user/balance`) 的响应模型。
 struct BalanceInfo: Codable {
     let isAvailable: Bool

@@ -58,7 +58,7 @@ function fixture({ openSession = (id, sessions) => { sessions.select(id) }, sele
   return {
     messages, panelMessages, timers, sessions, window,
     open(sessionId) { window.dispatchEvent({ type: 'dsh-desktop-open-session', detail: { sessionId } }) },
-    openPanel(panelId) { window.dispatchEvent({ type: 'dsh-desktop-open-panel', detail: { panelId } }) },
+    openPanel(panelId, requestId) { window.dispatchEvent({ type: 'dsh-desktop-open-panel', detail: { panelId, requestId } }) },
     expire() { for (const callback of timers.values()) callback() },
     close() { teardown?.() },
   }
@@ -103,17 +103,18 @@ test('selects the official plugins panel and acknowledges the native request', a
   const selected = []
   const page = fixture({ selectPanel: (id) => selected.push(id) })
   assert.equal(page.panelMessages[0]?.ready, true)
-  page.openPanel('plugins')
+  page.openPanel('plugins', 'request_1')
   await Promise.resolve()
   assert.deepEqual(selected, ['plugins'])
   assert.equal(page.panelMessages.at(-1).panelId, 'plugins')
+  assert.equal(page.panelMessages.at(-1).requestId, 'request_1')
   assert.equal(page.panelMessages.at(-1).opened, true)
 })
 
 test('rejects unsupported workspace panel requests', () => {
   const selected = []
   const page = fixture({ selectPanel: (id) => selected.push(id) })
-  page.openPanel('settings')
+  page.openPanel('settings', 'request_1')
   assert.deepEqual(selected, [])
   assert.equal(page.panelMessages.at(-1)?.opened, false)
   assert.match(page.panelMessages.at(-1)?.error ?? '', /面板/u)
@@ -121,8 +122,42 @@ test('rejects unsupported workspace panel requests', () => {
 
 test('reports when the official workspace panel selection fails', async () => {
   const page = fixture({ selectPanel: () => Promise.reject(new Error('panel unavailable')) })
-  page.openPanel('plugins')
+  page.openPanel('plugins', 'request_1')
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(page.panelMessages.at(-1)?.opened, false)
   assert.match(page.panelMessages.at(-1)?.error ?? '', /插件/u)
+})
+
+test('correlates a retry after timeout when the first panel selection resolves late', async () => {
+  const pending = []
+  const page = fixture({ selectPanel: () => new Promise((resolve) => pending.push(resolve)) })
+  const completed = []
+  let activeRequestId = 'request_1'
+  const acceptCurrentAck = (message) => {
+    if (message.requestId === activeRequestId && message.opened === true) {
+      completed.push(message.requestId)
+      activeRequestId = undefined
+    }
+  }
+
+  page.openPanel('plugins', 'request_1')
+  // Native times out request_1, then starts a distinct retry.
+  activeRequestId = 'request_2'
+  page.openPanel('plugins', 'request_2')
+  pending[1]()
+  await new Promise((resolve) => setImmediate(resolve))
+  acceptCurrentAck(page.panelMessages.at(-1))
+  pending[0]()
+  await new Promise((resolve) => setImmediate(resolve))
+  acceptCurrentAck(page.panelMessages.at(-1))
+  assert.deepEqual(completed, ['request_2'])
+  assert.deepEqual(page.panelMessages.filter((message) => message.opened).map((message) => message.requestId), ['request_2', 'request_1'])
+})
+
+test('rejects plugin panel requests with malformed identifiers', () => {
+  let selections = 0
+  const page = fixture({ selectPanel: () => { selections += 1 } })
+  for (const requestId of ['', 'bad/id', 'x'.repeat(129)]) page.openPanel('plugins', requestId)
+  assert.equal(selections, 0)
+  assert.equal(page.panelMessages.filter((message) => message.opened === false).length, 3)
 })

@@ -220,7 +220,7 @@ struct GuardianPanel: View {
                             Text("这次无法确认插件兼容状态。建议在工作区核对插件状态。")
                                 .font(.callout).foregroundStyle(.orange)
                         } else if !mismatched.isEmpty {
-                            Text("建议在工作区管理这些已启用插件，再决定是否继续使用候选引擎。")
+                            Text(compatibility.mismatchRecommendation ?? "建议在工作区管理这些已启用插件。")
                                 .font(.callout).foregroundStyle(.orange)
                             Text(mismatched.map(\.id).joined(separator: "、"))
                                 .font(.callout.weight(.medium))

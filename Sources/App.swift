@@ -78,11 +78,13 @@ struct ContentView: View {
                     store.pendingSessionId = nil
                     store.nativeActionMessage = error
                 },
-                onPanelOpened: {
+                onPanelOpened: { requestId in
+                    guard store.pendingWorkspacePanel?.requestId == requestId else { return }
                     store.pendingWorkspacePanel = nil
                     store.nativeActionMessage = ""
                 },
-                onPanelOpenFailed: { error in
+                onPanelOpenFailed: { requestId, error in
+                    guard store.pendingWorkspacePanel?.requestId == requestId else { return }
                     store.pendingWorkspacePanel = nil
                     store.nativeActionMessage = error
                 },
