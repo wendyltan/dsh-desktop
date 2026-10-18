@@ -1,5 +1,27 @@
 import Foundation
 
+enum ControlCenterSection: String, CaseIterable, Identifiable {
+    case overview, plugins, recovery, settings
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .overview: return "概览"
+        case .plugins: return "插件与兼容"
+        case .recovery: return "恢复与版本"
+        case .settings: return "桌面端设置"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .overview: return "circle.grid.2x2"
+        case .plugins: return "puzzlepiece.extension"
+        case .recovery: return "clock.arrow.circlepath"
+        case .settings: return "slider.horizontal.3"
+        }
+    }
+}
+
 /// DeepSeek 账户余额接口 (`GET /user/balance`) 的响应模型。
 struct BalanceInfo: Codable {
     let isAvailable: Bool

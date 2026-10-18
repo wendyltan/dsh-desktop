@@ -17,7 +17,7 @@ echo "PASS  desktop=$DESKTOP_VERSION guardian=$GUARDIAN_VERSION"
 
 echo "== UpdateChecker / shellQuote 单测 =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
-  Sources/UpdateChecker.swift Sources/GuardianService.swift \
+  Sources/Models.swift Sources/UpdateChecker.swift Sources/GuardianService.swift \
   Sources/ServerManager.swift Sources/Utils.swift \
   Tests/UpdateCheckerTests.swift -o bin/updatechecker-tests
 DSH_HOME="$ROOT/bin/verification-home" "$ROOT/bin/updatechecker-tests"

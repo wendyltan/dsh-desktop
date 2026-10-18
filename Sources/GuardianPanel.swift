@@ -58,9 +58,9 @@ private enum PanelSheet: String, Identifiable {
 
 struct GuardianPanel: View {
     @EnvironmentObject var store: AppStore
+    @ObservedObject var controller: GuardianPanelController
     @State private var activeAlert: PanelAlert?
     @State private var activeSheet: PanelSheet?
-    @State private var showMore = false
     @State private var showAllEvents = false
     let close: () -> Void
 
@@ -72,18 +72,6 @@ struct GuardianPanel: View {
     private var pluginCompatibility: GuardianPluginCompatibility? {
         store.candidatePluginCompatibility ?? response?.pluginCompatibility
     }
-    private var checkingCandidate: Bool { store.candidatePluginCompatibility != nil }
-    private var enabledPluginIssues: [GuardianPluginIssue] {
-        pluginCompatibility?.issues.filter(\.enabled) ?? []
-    }
-    private var inactivePluginIssues: [GuardianPluginIssue] {
-        pluginCompatibility?.issues.filter { !$0.enabled } ?? []
-    }
-    private var hasPluginWarning: Bool {
-        guard let compatibility = pluginCompatibility else { return false }
-        return !compatibility.checked || !enabledPluginIssues.isEmpty
-    }
-
     private var guardianColor: Color {
         if isRecovering { return .deepseekBlue }
         if isSafeMode { return .orange }
@@ -94,9 +82,6 @@ struct GuardianPanel: View {
     private var title: String {
         if isRecovering { return "正在处理" }
         if isSafeMode { return "服务处于受限运行" }
-        if isRunning, hasPluginWarning {
-            return checkingCandidate ? "服务可用 · 候选插件需检查" : "服务可用 · 插件需检查"
-        }
         if isRunning { return response?.effectiveMode == "recovered" ? "服务已恢复" : "运行状态正常" }
         return "暂时无法连接"
     }
@@ -109,15 +94,6 @@ struct GuardianPanel: View {
         }
         if isSafeMode { return "基础服务仍可使用，但完整功能尚未恢复。你可以尝试恢复完整运行。" }
         if isRunning {
-            if checkingCandidate {
-                return "候选引擎预检结果；当前运行服务仍保持原状态。"
-            }
-            if let compatibility = pluginCompatibility, !compatibility.checked {
-                return "服务已经连接，但无法确认插件依赖兼容性。"
-            }
-            if !enabledPluginIssues.isEmpty {
-                return "服务已经连接，但有 \(enabledPluginIssues.count) 个已启用插件的依赖版本需要检查。请查看下方提醒。"
-            }
             return response?.effectiveMode == "recovered"
                 ? "桌面保护组件已经把服务拉回来了，你可以继续使用。"
                 : "一切安好，你可以继续使用。"
@@ -126,40 +102,58 @@ struct GuardianPanel: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                GuardianRing(color: guardianColor)
-                    .padding(.top, 6)
-
-                VStack(spacing: 4) {
-                    Text(title).font(.title3).fontWeight(.semibold)
-                    Text(explanation)
-                        .font(.callout).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 440)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(ControlCenterSection.allCases) { section in
+                    Button { controller.selectedSection = section } label: {
+                        Label(section.title, systemImage: section.icon)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .contentShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(controller.selectedSection == section ? Color.deepseekBlue : Color.primary)
+                    .background {
+                        if controller.selectedSection == section {
+                            RoundedRectangle(cornerRadius: 8).fill(Color.deepseekBlue.opacity(0.10))
+                        }
+                    }
+                    .accessibilityAddTraits(controller.selectedSection == section ? .isSelected : [])
                 }
-
-                if isRecovering {
-                    progressCard
-                } else {
-                    actionRow
-                }
-
-                if isRunning && hasPluginWarning {
-                    pluginWarningCard
-                }
-
-                if let error = store.guardianError, !error.isEmpty, !isRecovering {
-                    Text("还没完全恢复。你可以在「详情与恢复」里看发生了什么，或再试一次。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                moreSection
+                Spacer()
             }
-            .padding(22)
-            .frame(minWidth: 560)
+            .padding(12)
+            .frame(width: 195)
+            .frame(maxHeight: .infinity)
+
+            Divider()
+
+            Group {
+                if controller.selectedSection == .settings {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(controller.selectedSection.title).font(.title2.weight(.semibold))
+                        SettingsView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .padding(22)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text(controller.selectedSection.title).font(.title2.weight(.semibold))
+                            switch controller.selectedSection {
+                            case .overview: overviewPane
+                            case .plugins: pluginsPane
+                            case .recovery: recoveryPane
+                            case .settings: EmptyView()
+                            }
+                        }
+                        .padding(22)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
         }
-        .frame(width: 560, height: 520)
+        .frame(minWidth: 820, idealWidth: 960, minHeight: 540, idealHeight: 680)
         .onExitCommand(perform: close)
         .alert(item: $activeAlert) { alert in
             Alert(
@@ -182,6 +176,90 @@ struct GuardianPanel: View {
                 )
                 .environmentObject(store)
             }
+        }
+    }
+
+    private var overviewPane: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 18) {
+                GuardianRing(color: guardianColor)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title).font(.title3.weight(.semibold))
+                    Text(explanation).font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if isRecovering { progressCard } else { actionRow }
+            if let error = store.guardianError, !error.isEmpty, !isRecovering {
+                Text("还没完全恢复。请查看「恢复与版本」中的诊断信息，或重新尝试恢复。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var pluginsPane: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let compatibility = pluginCompatibility {
+                let enabled = compatibility.issues.filter(\.enabled)
+                let mismatched = compatibility.checked ? enabled.filter { !$0.confirmedMismatches.isEmpty } : []
+                let unresolved = compatibility.checked ? enabled.filter { !$0.unresolvedFindings.isEmpty } : []
+                card {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(compatibility.scope == "candidate" ? "候选引擎预检" : "当前引擎检查", systemImage: "puzzlepiece.extension")
+                            .font(.headline)
+                        Text("引擎版本：\(compatibility.engineVersion ?? "未识别")")
+                        Text("检查时间：\(formatGuardianDate(compatibility.checkedAt))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if compatibility.scope == "candidate" {
+                            Text("这是候选引擎的预检结果；当前运行服务保持原状态。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        if !compatibility.checked {
+                            Text("这次无法确认插件兼容状态。建议在工作区核对插件状态。")
+                                .font(.callout).foregroundStyle(.orange)
+                        } else if !mismatched.isEmpty {
+                            Text("建议在工作区管理这些已启用插件，再决定是否继续使用候选引擎。")
+                                .font(.callout).foregroundStyle(.orange)
+                            Text(mismatched.map(\.id).joined(separator: "、"))
+                                .font(.callout.weight(.medium))
+                        } else if !unresolved.isEmpty {
+                            Text("有依赖版本无法确认；这不代表插件不兼容。建议在工作区核对插件状态。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        } else {
+                            Text("未发现已启用插件的已确认版本冲突。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if !compatibility.issues.isEmpty {
+                    DisclosureGroup("技术详情（\(compatibility.issues.count) 个插件）") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(compatibility.issues) { plugin in
+                                pluginCompatibilityDetail(plugin, checked: compatibility.checked)
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
+                    .padding(.horizontal, 4)
+                }
+            } else {
+                card {
+                    Label("尚无插件兼容检查结果", systemImage: "puzzlepiece.extension")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Button("在工作区管理插件") { store.openHarness() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!isRunning)
+            Text("插件启用、停用和安装仍由 Harness 工作区管理。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var recoveryPane: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            componentCard
+            technicalCard
+            timelineCard
         }
     }
 
@@ -223,42 +301,6 @@ struct GuardianPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var moreSection: some View {
-        VStack(spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { showMore.toggle() }
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label("详情与恢复", systemImage: "slider.horizontal.3").font(.headline)
-                        Text("版本、近期动态和低频恢复操作")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .rotationEffect(.degrees(showMore ? 180 : 0))
-                }
-                .padding(12)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if showMore {
-                componentCard
-                technicalCard
-                if let compatibility = pluginCompatibility,
-                   !compatibility.checked || !compatibility.issues.isEmpty {
-                    pluginCompatibilityCard(compatibility, candidate: checkingCandidate)
-                }
-                timelineCard
-            }
-        }
-    }
-
     private var componentCard: some View {
         card {
             VStack(alignment: .leading, spacing: 11) {
@@ -284,84 +326,7 @@ struct GuardianPanel: View {
         }
     }
 
-    private func pluginCompatibilityCard(_ compatibility: GuardianPluginCompatibility, candidate: Bool) -> some View {
-        let activeIssues = compatibility.issues.filter(\.enabled)
-        let inactiveIssues = compatibility.issues.filter { !$0.enabled }
-        return card {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(candidate ? "候选插件兼容检查" : "插件兼容提醒", systemImage: "puzzlepiece.extension")
-                    .font(.headline)
-                    .foregroundStyle(!compatibility.checked || !activeIssues.isEmpty ? .orange : .secondary)
-                if candidate {
-                    Text("这是候选引擎的预检结果，不代表当前运行服务出现故障。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if !compatibility.checked {
-                    Text("无法确认插件依赖兼容性。服务状态仍单独显示。")
-                        .font(.callout)
-                }
-                if !activeIssues.isEmpty {
-                    Text("已启用插件的依赖详情见上方提醒。桌面端不会自动停用或删除它们。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if !inactiveIssues.isEmpty {
-                    DisclosureGroup {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("这些插件目前未启用，因此当前运行不受影响。")
-                                .font(.caption).foregroundStyle(.secondary)
-                            ForEach(inactiveIssues) { plugin in
-                                pluginCompatibilityDetail(plugin)
-                            }
-                        }
-                        .padding(.top, 5)
-                    } label: {
-                        Label("未启用插件（\(inactiveIssues.count)）", systemImage: "puzzlepiece.extension")
-                            .font(.callout.weight(.medium))
-                    }
-                    .accessibilityHint("展开查看未启用插件的依赖问题；这些问题目前不影响运行")
-                }
-                if compatibility.checked && activeIssues.isEmpty && inactiveIssues.isEmpty {
-                    Text("未发现插件依赖问题。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private var pluginWarningCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(warningTitle, systemImage: "puzzlepiece.extension")
-                    .font(.headline).foregroundStyle(.orange)
-                if checkingCandidate {
-                    Text("这是候选引擎的预检结果，不代表当前运行服务出现故障。")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if !enabledPluginIssues.isEmpty {
-                    Text("有 \(enabledPluginIssues.count) 个已启用插件的依赖版本需要检查，可能无法正常工作。")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else {
-                    Text("目前无法确认插件依赖兼容性，服务仍可使用。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                if !enabledPluginIssues.isEmpty {
-                    DisclosureGroup("查看已启用插件（\(enabledPluginIssues.count)）") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(enabledPluginIssues) { plugin in pluginCompatibilityDetail(plugin) }
-                        }
-                        .padding(.top, 5)
-                    }
-                    .font(.callout.weight(.medium))
-                }
-            }
-        }
-    }
-
-    private var warningTitle: String {
-        if checkingCandidate { return "候选插件需检查" }
-        return enabledPluginIssues.isEmpty ? "插件兼容性待确认" : "已启用插件依赖需检查"
-    }
-
-    private func pluginCompatibilityDetail(_ plugin: GuardianPluginIssue) -> some View {
+    private func pluginCompatibilityDetail(_ plugin: GuardianPluginIssue, checked: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Text(plugin.id).font(.callout.weight(.medium))
@@ -369,7 +334,7 @@ struct GuardianPanel: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(plugin.issues) { dependency in
-                Text("\(dependency.name)：需要 \(dependency.required)，当前 \(dependency.actual ?? "未安装")")
+                Text("\(!checked ? "检查未完成" : dependency.classification == "range-mismatch" ? "版本不匹配" : "无法确认") · \(dependency.name)：需要 \(dependency.required)，当前 \(dependency.actual ?? "未安装")")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -835,35 +800,37 @@ private func formatGuardianDate(_ value: String?) -> String {
 }
 
 /// 「当前状态」独立浮窗：从菜单栏直接弹出，无需先打开客户端主窗口。
-final class GuardianPanelController: NSObject, NSWindowDelegate {
+final class GuardianPanelController: NSObject, NSWindowDelegate, ObservableObject {
     private var panel: NSPanel?
+    @Published var selectedSection = ControlCenterSection.overview
 
-    func show(store: AppStore) {
+    func show(store: AppStore, section: ControlCenterSection) {
+        selectedSection = section
         if panel == nil { makePanel(store: store) }
         guard let panel else { return }
         NSApp.activate(ignoringOtherApps: true)
         panel.center()
         panel.makeKeyAndOrderFront(nil)
-        store.refreshGuardian(deep: true)
     }
 
     func close() { panel?.orderOut(nil) }
 
     private func makePanel(store: AppStore) {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        panel.title = "DeepSeek Harness · 当前状态"
+        panel.title = "DeepSeek Harness · 控制中心"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
+        panel.minSize = NSSize(width: 820, height: 540)
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self
         panel.contentViewController = NSHostingController(rootView:
-            GuardianPanel(close: { [weak self] in self?.close() })
+            GuardianPanel(controller: self, close: { [weak self] in self?.close() })
                 .environmentObject(store)
         )
         self.panel = panel

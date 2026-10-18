@@ -75,6 +75,9 @@ struct GuardianPluginIssue: Decodable, Identifiable {
     let version: String?
     let enabled: Bool
     let issues: [Dependency]
+
+    var confirmedMismatches: [Dependency] { issues.filter { $0.classification == "range-mismatch" } }
+    var unresolvedFindings: [Dependency] { issues.filter { $0.classification != "range-mismatch" } }
 }
 
 struct GuardianPluginCompatibility: Decodable {

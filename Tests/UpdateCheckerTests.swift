@@ -10,6 +10,11 @@ struct UpdateCheckerTests {
             else { failures += 1; print("FAIL  \(label)") }
         }
 
+        expect(ControlCenterSection.allCases == [.overview, .plugins, .recovery, .settings],
+               "control center sections retain the task order")
+        expect(ControlCenterSection.allCases.map(\.title) == ["概览", "插件与兼容", "恢复与版本", "桌面端设置"],
+               "control center labels name all four task domains")
+
         if let testHome = ProcessInfo.processInfo.environment["DSH_HOME"] {
             expect(ServerManager.webAccessURLFile == "\(testHome)/guardian/web-access-url", "isolated authentication file")
             expect(ServerManager.launchScript == "\(testHome)/dsh-desktop/launch.sh", "isolated launcher")
@@ -30,6 +35,9 @@ struct UpdateCheckerTests {
         expect(compatibilityResponse.pluginCompatibility?.engineVersion == "0.4.0-rc.1", "compatibility engine version decodes")
         expect(compatibilityResponse.pluginCompatibility?.checkedAt == "2026-10-18T00:00:00.000Z", "compatibility check time decodes")
         expect(compatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == "unresolved", "unresolved dependency classification decodes")
+        let findings = try! JSONDecoder().decode(GuardianPluginIssue.self, from: Data(#"{"id":"evidence-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"confirmed","required":"^1.0.0","actual":"2.0.0","classification":"range-mismatch"},{"name":"unknown","required":"^1.0.0","actual":null,"classification":"unresolved"}]}"#.utf8))
+        expect(findings.confirmedMismatches.map(\.name) == ["confirmed"], "only confirmed range mismatches are compatibility risks")
+        expect(findings.unresolvedFindings.map(\.name) == ["unknown"], "unresolved dependency findings stay separate")
         let legacyCompatibilityJSON = #"{"ok":true,"pluginCompatibility":{"checked":true,"issues":[{"id":"legacy-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"legacy-dependency","required":"^1.0.0","actual":"2.0.0"}]}]}}"#
         let legacyCompatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(legacyCompatibilityJSON.utf8))
         expect(legacyCompatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == nil, "legacy dependency without classification decodes")

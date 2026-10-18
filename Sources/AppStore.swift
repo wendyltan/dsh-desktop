@@ -25,7 +25,6 @@ final class AppStore: NSObject, ObservableObject {
     private let quickPrompt = QuickPromptPanelController()
     private let metrics = NativeMetricsStore()
     private let guardianPanelController = GuardianPanelController()
-    private let settingsWindowController = SettingsWindowController()
     private var nativeSurfaceStarted = false
     private var didNotifyLowBalance = false
     private var lastGuardianMode: String?
@@ -172,16 +171,16 @@ final class AppStore: NSObject, ObservableObject {
         let open = NSMenuItem(title: "打开客户端窗口", action: #selector(menuOpenHarness), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
-        let status = NSMenuItem(title: "当前状态…", action: #selector(menuShowProtection), keyEquivalent: "")
+        let status = NSMenuItem(title: "控制中心…", action: #selector(menuShowProtection), keyEquivalent: "")
         status.target = self
         menu.addItem(status)
-        let check = NSMenuItem(title: "检查更新…", action: #selector(menuCheckUpdate), keyEquivalent: "")
+        let check = NSMenuItem(title: "检查 Harness 引擎更新…", action: #selector(menuCheckUpdate), keyEquivalent: "")
         check.target = self
         check.isHidden = true
         menu.addItem(check)
         updateMenuItem = check
         menu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(menuSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "桌面端设置…", action: #selector(menuSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(.separator())
@@ -381,10 +380,10 @@ final class AppStore: NSObject, ObservableObject {
     }
     @objc private func menuSettings() { openSettings() }
 
-    /// 打开「当前状态」独立浮窗（无需先打开客户端主窗口）。
-    func showGuardianPanel() {
+    /// 打开控制中心；首次展示由 AppStore 发起唯一一次深度刷新。
+    func showGuardianPanel(section: ControlCenterSection = .overview) {
         refreshGuardian(deep: true)
-        guardianPanelController.show(store: self)
+        guardianPanelController.show(store: self, section: section)
     }
 
     // MARK: - 全局快捷键与设置
@@ -546,9 +545,9 @@ final class AppStore: NSObject, ObservableObject {
         }
     }
 
-    /// 打开设置窗口。
+    /// 从桌面端设置入口打开控制中心的设置分区。
     func openSettings() {
-        settingsWindowController.show(store: self)
+        showGuardianPanel(section: .settings)
     }
 
     // MARK: - 网络 / 睡眠自适应自愈（静默，无 UI）
