@@ -25,11 +25,7 @@ struct GuardianRing: View {
             Circle()
                 .fill(color.opacity(0.08))
             Circle()
-                .stroke(color.opacity(0.24), lineWidth: 1)
-            Circle()
-                .trim(from: 0.05, to: 0.78)
-                .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+                .stroke(color.opacity(0.9), lineWidth: 3)
             if let whale = WhaleLogo.image {
                 Image(nsImage: whale)
                     .resizable()
