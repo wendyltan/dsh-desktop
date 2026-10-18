@@ -604,6 +604,7 @@ final class AppStore: NSObject, ObservableObject {
         notificationService.start()
 
         quickPrompt.onOpenClient = { [weak self] in self?.showClientPanel() }
+        quickPrompt.onOpenSession = { [weak self] in self?.openSession($0) }
         quickPrompt.onMetric = { [weak self] metric, outcome in self?.metrics.record(metric, outcome: outcome) }
         quickPrompt.onSessionChange = { [weak self] sessionId in self?.refreshQuickPromptSummary(sessionId: sessionId) }
         quickPrompt.onRetrySessions = { [weak self] in self?.refreshQuickPromptSessions() }
