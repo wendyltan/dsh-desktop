@@ -19,7 +19,7 @@ struct DeepSeekHarnessApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" ? "DeepSeek Harness Test" : "DeepSeek Harness") {
+        Window(ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" ? "DeepSeek Harness Test" : "DeepSeek Harness", id: "client") {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 980, minHeight: 640)
@@ -50,6 +50,10 @@ struct DeepSeekHarnessApp: App {
                 if Bundle.main.bundleIdentifier == "com.dsh.desktop.test" {
                     Button("快速提问…") { store.showQuickPrompt() }
                     Button("控制中心…") { store.showGuardianPanel() }
+                    Button("验证关闭后更新弹窗") {
+                        NSApp.windows.first { $0.identifier?.rawValue == "client" }?.close()
+                        store.checkUpdate(force: true)
+                    }
                     Button("发送会话导航测试通知") { store.sendNavigationTestNotification() }
                 }
             }
@@ -59,6 +63,7 @@ struct DeepSeekHarnessApp: App {
 }
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject var store: AppStore
     @State private var pageState: ClientPageState = .loading
     @State private var showRecoveryConfirmation = false
@@ -132,6 +137,9 @@ struct ContentView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            store.openClientWindow = { openWindow(id: "client") }
+        }
         .alert("检查并尝试恢复？", isPresented: $showRecoveryConfirmation) {
             Button("开始恢复") { store.restartWithGuardian() }
             Button("取消", role: .cancel) {}

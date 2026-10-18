@@ -138,6 +138,7 @@ final class AppStore: NSObject, ObservableObject {
     private var statusItem: NSStatusItem?
     private var updateMenuItem: NSMenuItem?
     private var pendingMenuItem: NSMenuItem?
+    var openClientWindow: (() -> Void)?
     private let statusBarLogoOpticalLift: CGFloat = 0.5
     var desktopVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "开发版"
@@ -180,10 +181,6 @@ final class AppStore: NSObject, ObservableObject {
         check.isHidden = true
         menu.addItem(check)
         updateMenuItem = check
-        menu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "桌面端设置…", action: #selector(menuSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 DeepSeek Harness", action: #selector(menuQuit), keyEquivalent: "q")
         quit.target = self
@@ -344,6 +341,10 @@ final class AppStore: NSObject, ObservableObject {
     /// 菜单栏「打开客户端面板」：唤起 App 窗口（不自动打开控制中心）。
     func showClientPanel() {
         NSApp.activate(ignoringOtherApps: true)
+        if let openClientWindow {
+            openClientWindow()
+            return
+        }
         for w in NSApp.windows where w.canBecomeMain {
             w.makeKeyAndOrderFront(nil)
         }
@@ -384,8 +385,6 @@ final class AppStore: NSObject, ObservableObject {
     @objc private func menuShowProtection() {
         showGuardianPanel()
     }
-    @objc private func menuSettings() { openSettings() }
-
     /// 打开控制中心；首次展示由 AppStore 发起唯一一次深度刷新。
     func showGuardianPanel(section: ControlCenterSection = .overview) {
         refreshGuardian(deep: true)
@@ -915,6 +914,7 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func checkUpdate(force: Bool = false) {
+        if force { showClientPanel() }
         updateCheckGeneration += 1
         let generation = updateCheckGeneration
         let channel = settings.engineUpdateChannel
