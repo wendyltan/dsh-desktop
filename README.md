@@ -1,6 +1,6 @@
 # DeepSeek Harness Desktop for macOS
 
-dsh-desktop 是 DeepSeek Harness 的第三方 macOS 客户端，提供菜单栏入口、快速提问、服务状态查看、Harness 引擎更新和故障恢复。桌面客户端与 Guardian 当前候选版本均为 0.6.0；Harness 引擎单独发布和更新，版本号独立于客户端。
+dsh-desktop 是 DeepSeek Harness 的第三方 macOS 客户端，提供菜单栏入口、快速提问、服务状态查看、Harness 引擎更新和故障恢复。本仓库中桌面客户端与 Guardian 的源码版本为 0.6.0，仅用于隔离验收，尚未正式安装或发布。Harness 引擎单独发布和更新，版本号独立于客户端。
 
 dsh-desktop 与 DeepSeek 官方无隶属关系。项目面向从源码构建的 macOS 用户，目前没有签名并公证的 DMG 安装包。
 
