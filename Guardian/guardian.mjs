@@ -386,13 +386,20 @@ function sessionRestoreCompatibility(targetBin, currentBin) {
   })
 }
 
-function pluginCompatibility(profile = PROFILE, bin = dshEntry()) {
-  const profilePackage = readJson(join(profile, 'package.json'))
+function pluginCompatibility(profile = PROFILE, bin = dshEntry(), scope = 'current') {
   const engineRoot = enginePackageRoot(bin)
-  if (!profilePackage || !engineRoot) return { checked: false, issues: [] }
+  const result = {
+    scope,
+    engineVersion: engineRoot ? readJson(join(engineRoot, 'package.json'))?.version ?? null : null,
+    checkedAt: now(),
+    checked: false,
+    issues: [],
+  }
+  const profilePackage = readJson(join(profile, 'package.json'))
+  if (!profilePackage || !engineRoot) return result
   const requireFromEngine = createRequire(bin)
-  let satisfies
-  try { satisfies = requireFromEngine('semver').satisfies } catch { return { checked: false, issues: [] } }
+  let satisfies, validRange
+  try { ({ satisfies, validRange } = requireFromEngine('semver')) } catch { return result }
   const engineModules = dirname(dirname(engineRoot))
   const enabled = new Set(profilePackage.dsh?.profile?.bundles ?? [])
   const modules = join(profile, 'node_modules')
@@ -415,20 +422,26 @@ function pluginCompatibility(profile = PROFILE, bin = dshEntry()) {
     for (const [name, range] of Object.entries(manifest.peerDependencies)) {
       let actual
       if (!/^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(name)) {
-        issues.push({ name, required: range, actual: null })
+        issues.push({ name, required: range, actual: null, classification: 'unresolved' })
         continue
       }
       for (const modules of [engineModules, join(profile, 'node_modules')]) {
         actual = readJson(join(modules, ...name.split('/'), 'package.json'))?.version
         if (actual) break
       }
+      let rangeIsValid = false
+      try { rangeIsValid = validRange(range) !== null } catch {}
+      if (!actual || !rangeIsValid) {
+        issues.push({ name, required: range, actual: actual ?? null, classification: 'unresolved' })
+        continue
+      }
       let compatible = false
-      try { compatible = actual !== undefined && satisfies(actual, range) } catch {}
-      if (!compatible) issues.push({ name, required: range, actual: actual ?? null })
+      try { compatible = satisfies(actual, range, { includePrerelease: true }) } catch {}
+      if (!compatible) issues.push({ name, required: range, actual, classification: 'range-mismatch' })
     }
     return issues.length ? [{ id, version: manifest.version ?? null, enabled: enabled.has(id), issues }] : []
   })
-  return { checked: true, issues }
+  return { ...result, checked: true, issues }
 }
 
 function validEngineVersion(value) {
@@ -587,7 +600,7 @@ async function updateEngine(version, channel = null) {
   writeEngineSelection({ ...next, channel: targetChannel }, planned.retained)
 
   updateProgress({ phase: 'preflight', percent: 65, version, message: '下载完成，正在执行隔离预检' })
-  const checked = await preflight({ enforcePluginCompatibility: true })
+  const checked = await preflight({ enforcePluginCompatibility: true, scope: 'candidate' })
   if (!checked.ok) {
     const reason = (checked.issues ?? ['未知错误'])
       .map((item) => String(item).replace(/\s+/g, ' ').trim().slice(0, 360))
@@ -668,7 +681,7 @@ async function switchEngineVersion(version, { allowEngineRollback = false } = {}
   const planned = pruneEngineEntries(candidates)
   writeEngineSelection({ ...target, validatedAt: target.validatedAt ?? now() }, planned.retained)
   operationProgress(25, `正在验证 Harness 引擎 ${version}…`)
-  const checked = await preflight({ enforcePluginCompatibility: true })
+  const checked = await preflight({ enforcePluginCompatibility: true, scope: 'candidate' })
   if (!checked.ok) {
     writeJsonAtomic(ENGINE_STATE_FILE, originalState)
     const detail = checked.issues?.length ? `：${checked.issues.join('；')}` : ''
@@ -1011,16 +1024,16 @@ async function health(base, { healthPaths = [], checkBundles = true, accessURL =
   return { bootRev: boot.rev, modules: boot.entries.length }
 }
 
-async function preflight({ smoke = true, enforcePluginCompatibility = false } = {}) {
+async function preflight({ smoke = true, enforcePluginCompatibility = false, scope = 'current' } = {}) {
   const basic = validateProfileFiles()
   if (!basic.ok) return { ok: false, stage: 'files', ...basic }
-  const pluginStatus = pluginCompatibility()
+  const pluginStatus = pluginCompatibility(PROFILE, dshEntry(), scope)
   if (enforcePluginCompatibility && !pluginStatus.checked) {
     return { ok: false, stage: 'plugin-compatibility', issues: ['无法确认已安装插件的依赖兼容性'], pluginCompatibility: pluginStatus }
   }
-  const enabledPluginIssues = pluginStatus.issues.filter((plugin) => plugin.enabled)
+  const enabledPluginIssues = pluginStatus.issues.filter((plugin) => plugin.enabled && plugin.issues.some((dependency) => dependency.classification === 'range-mismatch'))
   if (enforcePluginCompatibility && enabledPluginIssues.length) {
-    const issues = enabledPluginIssues.flatMap((plugin) => plugin.issues.map((dependency) =>
+    const issues = enabledPluginIssues.flatMap((plugin) => plugin.issues.filter((dependency) => dependency.classification === 'range-mismatch').map((dependency) =>
       `${plugin.id}: ${dependency.name} 需要 ${dependency.required}，当前 ${dependency.actual ?? '未安装'}`))
     return { ok: false, stage: 'plugin-compatibility', issues, pluginCompatibility: pluginStatus }
   }

@@ -111,8 +111,8 @@ mkdirSync(join(dshPackage, 'lib'), { recursive: true })
 mkdirSync(join(dshPackage, 'node_modules', 'semver'), { recursive: true })
 mkdirSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis'), { recursive: true })
 mkdirSync(integration, { recursive: true })
-writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: 'test' }))
-writeFileSync(join(dshPackage, 'node_modules', 'semver', 'index.js'), 'exports.satisfies = (version, range) => range === version || range === `^${version}`\n')
+writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '4.0.0-rc.1' }))
+writeFileSync(join(dshPackage, 'node_modules', 'semver', 'index.js'), 'exports.validRange = (range) => typeof range === "string" && range !== "invalid" ? range : null\nexports.satisfies = (version, range, options = {}) => range === "*" ? (!version.includes("-") || options.includePrerelease === true) : range === version || range === `^${version}`\n')
 writeFileSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis', version: '4.0.0' }))
 writeFileSync(join(dshPackage, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
 symlinkSync(join(dshPackage, 'lib', 'bin.js'), join(profile, 'node_modules', '.bin', 'dsh'))
@@ -124,7 +124,7 @@ writeFileSync(join(profile, 'cordis.yml'), '[]\n')
 writeFileSync(join(profile, 'cordis.patch.yml'), '[]\n')
 writeFileSync(join(integration, 'package.json'), JSON.stringify({
   name: 'test-integration',
-  peerDependencies: { '@deepseek-ai/cordis': '^4.0.2' },
+  peerDependencies: { '@deepseek-ai/cordis': '^4.0.2', '@deepseek-ai/dsh': '*', '@deepseek-ai/missing': '^1.0.0' },
   dsh: { bundle: true, guardian: {
     protocolVersion: 1,
     healthPath: '/test/status',
@@ -317,6 +317,12 @@ guardian.releaseLock();`
   assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.enabled, true)
   assert.equal(compatibility.issues.find((item) => item.id === 'inactive-integration')?.enabled, false)
   assert.equal(compatibility.issues[0].issues[0].actual, '4.0.0')
+  assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.issues.some((item) => item.name === '@deepseek-ai/dsh'), false)
+  assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.issues.find((item) => item.name === '@deepseek-ai/missing')?.classification, 'unresolved')
+  assert.equal(compatibility.scope, 'current')
+  assert.equal(compatibility.engineVersion, '4.0.0-rc.1')
+  assert.equal(typeof compatibility.checkedAt, 'string')
+  assert.equal(guardian.pluginCompatibility(profile, join(dshPackage, 'lib', 'bin.js'), 'candidate').scope, 'candidate')
   const blockedPreflight = await guardian.preflight({ smoke: false, enforcePluginCompatibility: true })
   assert.equal(blockedPreflight.ok, false)
   assert.equal(blockedPreflight.stage, 'plugin-compatibility')
@@ -325,6 +331,14 @@ guardian.releaseLock();`
   const inactivePreflight = await guardian.preflight({ smoke: false, enforcePluginCompatibility: true })
   assert.equal(inactivePreflight.ok, true)
   assert.equal(inactivePreflight.pluginCompatibility.issues.find((item) => item.id === 'inactive-integration')?.enabled, false)
+  writeFileSync(join(profile, 'package.json'), JSON.stringify({
+    name: 'guardian-test-profile', dsh: { profile: { bundles: ['@deepseek-ai/dsh', 'test-integration'] } },
+  }, null, 2))
+  writeFileSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis', version: '4.0.2' }))
+  const unresolvedPreflight = await guardian.preflight({ smoke: false, enforcePluginCompatibility: true })
+  assert.equal(unresolvedPreflight.ok, true)
+  assert.equal(unresolvedPreflight.pluginCompatibility.issues.find((item) => item.id === 'test-integration')?.issues.find((item) => item.name === '@deepseek-ai/missing')?.classification, 'unresolved')
+  writeFileSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis', version: '4.0.0' }))
   writeFileSync(join(profile, 'package.json'), JSON.stringify({
     name: 'guardian-test-profile', dsh: { profile: { bundles: ['@deepseek-ai/dsh', 'test-integration'] } },
   }, null, 2))

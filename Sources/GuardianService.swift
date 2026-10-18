@@ -67,6 +67,7 @@ struct GuardianPluginIssue: Decodable, Identifiable {
         let name: String
         let required: String
         let actual: String?
+        let classification: String?
         var id: String { name }
     }
 
@@ -77,6 +78,9 @@ struct GuardianPluginIssue: Decodable, Identifiable {
 }
 
 struct GuardianPluginCompatibility: Decodable {
+    let scope: String?
+    let engineVersion: String?
+    let checkedAt: String?
     let checked: Bool
     let issues: [GuardianPluginIssue]
 }

@@ -24,6 +24,12 @@ struct UpdateCheckerTests {
         var changedEngine = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"engine\":\"0.3.0\"}".utf8))
         changedEngine.retainPluginCompatibility(from: previous)
         expect(changedEngine.pluginCompatibility == nil, "engine change clears prior plugin status")
+        let compatibilityJSON = #"{"ok":true,"pluginCompatibility":{"scope":"candidate","engineVersion":"0.4.0-rc.1","checkedAt":"2026-10-18T00:00:00.000Z","checked":true,"issues":[{"id":"test-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"missing-package","required":"^1.0.0","actual":null,"classification":"unresolved"}]}]}}"#
+        let compatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(compatibilityJSON.utf8))
+        expect(compatibilityResponse.pluginCompatibility?.scope == "candidate", "candidate compatibility scope decodes")
+        expect(compatibilityResponse.pluginCompatibility?.engineVersion == "0.4.0-rc.1", "compatibility engine version decodes")
+        expect(compatibilityResponse.pluginCompatibility?.checkedAt == "2026-10-18T00:00:00.000Z", "compatibility check time decodes")
+        expect(compatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == "unresolved", "unresolved dependency classification decodes")
         let runningSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":true,\"mode\":\"safe\"}".utf8))
         let stoppedSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":false,\"mode\":\"safe\"}".utf8))
         expect(runningSafe.isRunningInSafeMode, "safe mode warning requires a running service")
