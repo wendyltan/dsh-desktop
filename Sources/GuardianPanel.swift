@@ -16,33 +16,29 @@ private enum WhaleLogo {
     }()
 }
 
-/// 守护者光环：状态色圆环 + 居中鲸鱼 + 克制呼吸动效。
+/// 守护者徽记：状态色圆环 + 居中鲸鱼。
 struct GuardianRing: View {
     let color: Color
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulsing = false
 
     var body: some View {
         ZStack {
             Circle()
-                .stroke(color.opacity(0.16), lineWidth: 7)
+                .fill(color.opacity(0.08))
             Circle()
-                .stroke(color.opacity(0.9), lineWidth: 3)
-                .scaleEffect(pulsing ? 1.06 : 0.94)
+                .stroke(color.opacity(0.24), lineWidth: 1)
+            Circle()
+                .trim(from: 0.05, to: 0.78)
+                .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
             if let whale = WhaleLogo.image {
                 Image(nsImage: whale)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 40, height: 40)
+                    .frame(width: 28, height: 28)
             }
         }
-        .frame(width: 96, height: 96)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 3).repeatForever(autoreverses: true)) {
-                pulsing = true
-            }
-        }
+        .frame(width: 64, height: 64)
+        .accessibilityHidden(true)
     }
 }
 
@@ -181,14 +177,20 @@ struct GuardianPanel: View {
 
     private var overviewPane: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 18) {
-                GuardianRing(color: guardianColor)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(title).font(.title3.weight(.semibold))
-                    Text(explanation).font(.callout).foregroundStyle(.secondary)
+            card {
+                HStack(spacing: 16) {
+                    GuardianRing(color: guardianColor)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).font(.title3.weight(.semibold))
+                        Text(explanation).font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 24)
+                    if !isRecovering {
+                        primaryAction
+                    }
                 }
             }
-            if isRecovering { progressCard } else { actionRow }
+            if isRecovering { progressCard }
             if let error = store.guardianError, !error.isEmpty, !isRecovering {
                 Text("还没完全恢复。请查看「恢复与版本」中的诊断信息，或重新尝试恢复。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -292,20 +294,17 @@ struct GuardianPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var actionRow: some View {
-        HStack(spacing: 10) {
-            if isSafeMode {
-                Button("尝试恢复完整运行") { activeAlert = .restart }
-                    .buttonStyle(.borderedProminent)
-            } else if isRunning {
-                Button("打开客户端窗口") { store.openHarness() }
-                    .buttonStyle(.borderedProminent)
-            } else {
-                Button("检查并尝试恢复") { activeAlert = .restart }
-                    .buttonStyle(.borderedProminent)
-            }
+    @ViewBuilder private var primaryAction: some View {
+        if isSafeMode {
+            Button("尝试恢复完整运行") { activeAlert = .restart }
+                .buttonStyle(.borderedProminent)
+        } else if isRunning {
+            Button("打开客户端窗口") { store.openHarness() }
+                .buttonStyle(.borderedProminent)
+        } else {
+            Button("检查并尝试恢复") { activeAlert = .restart }
+                .buttonStyle(.borderedProminent)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var componentCard: some View {
