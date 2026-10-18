@@ -398,12 +398,12 @@ function pluginCompatibility(profile = PROFILE, bin = dshEntry(), scope = 'curre
   const profilePackage = readJson(join(profile, 'package.json'))
   if (!profilePackage || !engineRoot) return result
   const requireFromEngine = createRequire(bin)
-  let satisfies, validRange
-  try { ({ satisfies, validRange } = requireFromEngine('semver')) } catch { return result }
+  let satisfies, valid, validRange
+  try { ({ satisfies, valid, validRange } = requireFromEngine('semver')) } catch { return result }
   const engineModules = dirname(dirname(engineRoot))
   const enabled = new Set(profilePackage.dsh?.profile?.bundles ?? [])
   const modules = join(profile, 'node_modules')
-  if (!existsSync(modules)) return { checked: true, issues: [] }
+  if (!existsSync(modules)) return { ...result, checked: true }
   const installedPlugins = readdirSync(modules, { withFileTypes: true }).flatMap((entry) => {
     if (entry.name.startsWith('.')) return []
     const path = join(modules, entry.name)
@@ -430,8 +430,10 @@ function pluginCompatibility(profile = PROFILE, bin = dshEntry(), scope = 'curre
         if (actual) break
       }
       let rangeIsValid = false
+      let actualIsValid = false
       try { rangeIsValid = validRange(range) !== null } catch {}
-      if (!actual || !rangeIsValid) {
+      try { actualIsValid = typeof actual === 'string' && valid(actual) !== null } catch {}
+      if (!actualIsValid || !rangeIsValid) {
         issues.push({ name, required: range, actual: actual ?? null, classification: 'unresolved' })
         continue
       }

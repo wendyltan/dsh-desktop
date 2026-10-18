@@ -110,10 +110,12 @@ mkdirSync(join(profile, 'node_modules', '.bin'), { recursive: true })
 mkdirSync(join(dshPackage, 'lib'), { recursive: true })
 mkdirSync(join(dshPackage, 'node_modules', 'semver'), { recursive: true })
 mkdirSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis'), { recursive: true })
+mkdirSync(join(profile, 'node_modules', 'non-semver-package'), { recursive: true })
 mkdirSync(integration, { recursive: true })
 writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '4.0.0-rc.1' }))
-writeFileSync(join(dshPackage, 'node_modules', 'semver', 'index.js'), 'exports.validRange = (range) => typeof range === "string" && range !== "invalid" ? range : null\nexports.satisfies = (version, range, options = {}) => range === "*" ? (!version.includes("-") || options.includePrerelease === true) : range === version || range === `^${version}`\n')
+writeFileSync(join(dshPackage, 'node_modules', 'semver', 'index.js'), 'exports.valid = (version) => /^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : null\nexports.validRange = (range) => typeof range === "string" && range !== "invalid" ? range : null\nexports.satisfies = (version, range, options = {}) => range === "*" ? (!version.includes("-") || options.includePrerelease === true) : range === version || range === `^${version}`\n')
 writeFileSync(join(profile, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis', version: '4.0.0' }))
+writeFileSync(join(profile, 'node_modules', 'non-semver-package', 'package.json'), JSON.stringify({ name: 'non-semver-package', version: 'workspace:*' }))
 writeFileSync(join(dshPackage, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
 symlinkSync(join(dshPackage, 'lib', 'bin.js'), join(profile, 'node_modules', '.bin', 'dsh'))
 writeFileSync(join(profile, 'package.json'), JSON.stringify({
@@ -124,7 +126,7 @@ writeFileSync(join(profile, 'cordis.yml'), '[]\n')
 writeFileSync(join(profile, 'cordis.patch.yml'), '[]\n')
 writeFileSync(join(integration, 'package.json'), JSON.stringify({
   name: 'test-integration',
-  peerDependencies: { '@deepseek-ai/cordis': '^4.0.2', '@deepseek-ai/dsh': '*', '@deepseek-ai/missing': '^1.0.0' },
+  peerDependencies: { '@deepseek-ai/cordis': '^4.0.2', '@deepseek-ai/dsh': '*', '@deepseek-ai/missing': '^1.0.0', 'non-semver-package': '^1.0.0' },
   dsh: { bundle: true, guardian: {
     protocolVersion: 1,
     healthPath: '/test/status',
@@ -311,6 +313,10 @@ guardian.releaseLock();`
   assert.equal(integrations[0].id, 'test-integration')
   assert.equal(integrations[0].healthPath, '/test/status')
   assert.equal(guardian.validateProfileFiles().ok, true)
+  const emptyProfile = join(root, 'profiles', 'empty-profile')
+  mkdirSync(emptyProfile, { recursive: true })
+  writeFileSync(join(emptyProfile, 'package.json'), JSON.stringify({ name: 'empty-test-profile' }))
+  const emptyCompatibility = guardian.pluginCompatibility(emptyProfile, join(dshPackage, 'lib', 'bin.js'))
   const compatibility = guardian.pluginCompatibility(profile, join(dshPackage, 'lib', 'bin.js'))
   assert.equal(compatibility.checked, true)
   assert.equal(compatibility.issues.length, 2)
@@ -319,6 +325,11 @@ guardian.releaseLock();`
   assert.equal(compatibility.issues[0].issues[0].actual, '4.0.0')
   assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.issues.some((item) => item.name === '@deepseek-ai/dsh'), false)
   assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.issues.find((item) => item.name === '@deepseek-ai/missing')?.classification, 'unresolved')
+  assert.equal(compatibility.issues.find((item) => item.id === 'test-integration')?.issues.find((item) => item.name === 'non-semver-package')?.classification, 'unresolved')
+  assert.equal(emptyCompatibility.checked, true)
+  assert.equal(emptyCompatibility.scope, 'current')
+  assert.equal(emptyCompatibility.engineVersion, '4.0.0-rc.1')
+  assert.equal(typeof emptyCompatibility.checkedAt, 'string')
   assert.equal(compatibility.scope, 'current')
   assert.equal(compatibility.engineVersion, '4.0.0-rc.1')
   assert.equal(typeof compatibility.checkedAt, 'string')

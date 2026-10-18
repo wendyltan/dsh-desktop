@@ -30,6 +30,9 @@ struct UpdateCheckerTests {
         expect(compatibilityResponse.pluginCompatibility?.engineVersion == "0.4.0-rc.1", "compatibility engine version decodes")
         expect(compatibilityResponse.pluginCompatibility?.checkedAt == "2026-10-18T00:00:00.000Z", "compatibility check time decodes")
         expect(compatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == "unresolved", "unresolved dependency classification decodes")
+        let legacyCompatibilityJSON = #"{"ok":true,"pluginCompatibility":{"checked":true,"issues":[{"id":"legacy-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"legacy-dependency","required":"^1.0.0","actual":"2.0.0"}]}]}}"#
+        let legacyCompatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(legacyCompatibilityJSON.utf8))
+        expect(legacyCompatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == nil, "legacy dependency without classification decodes")
         let runningSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":true,\"mode\":\"safe\"}".utf8))
         let stoppedSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":false,\"mode\":\"safe\"}".utf8))
         expect(runningSafe.isRunningInSafeMode, "safe mode warning requires a running service")
