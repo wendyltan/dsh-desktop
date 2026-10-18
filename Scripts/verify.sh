@@ -17,7 +17,7 @@ echo "PASS  desktop=$DESKTOP_VERSION guardian=$GUARDIAN_VERSION"
 
 echo "== UpdateChecker / shellQuote 单测 =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
-  Sources/UpdateChecker.swift Sources/GuardianService.swift \
+  Sources/Models.swift Sources/UpdateChecker.swift Sources/GuardianService.swift \
   Sources/ServerManager.swift Sources/Utils.swift \
   Tests/UpdateCheckerTests.swift -o bin/updatechecker-tests
 DSH_HOME="$ROOT/bin/verification-home" "$ROOT/bin/updatechecker-tests"
@@ -39,6 +39,35 @@ echo "== 原生事件桥验证 =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/EventBridge.swift Bridge/Verify.swift -framework Network -o bin/bridge-tests
 DSH_DESKTOP_BRIDGE_PORT=13991 "$ROOT/bin/bridge-tests"
+
+echo "== WKWebView 文档导航生命周期回归 =="
+WEBVIEW_SMOKE_ROOT="$(mktemp -d "$ROOT/.test-home/webview-navigation.XXXXXX")"
+WEBVIEW_SERVER_PID=""
+cleanup_webview_smoke() {
+  if [ -n "$WEBVIEW_SERVER_PID" ]; then kill "$WEBVIEW_SERVER_PID" 2>/dev/null || true; fi
+  rm -rf "$WEBVIEW_SMOKE_ROOT"
+  rm -f "$ROOT/bin/webview-navigation-tests" "$ROOT/bin/webview-navigation-server.log"
+}
+trap cleanup_webview_smoke EXIT
+cp "$ROOT/Tests/webview-smoke/navigation.html" "$WEBVIEW_SMOKE_ROOT/navigation.html"
+cp "$ROOT/Tests/webview-smoke/navigation-target.html" "$WEBVIEW_SMOKE_ROOT/navigation-target.html"
+swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
+  Tests/WebViewNavigationTests.swift Sources/WebView.swift Sources/Models.swift \
+  -framework SwiftUI -framework WebKit -framework AppKit -o bin/webview-navigation-tests
+DSH_WEBVIEW_SMOKE_ROOT="$WEBVIEW_SMOKE_ROOT" DSH_WEBVIEW_SMOKE_PORT=13992 node Scripts/webview-smoke-server.mjs > "$ROOT/bin/webview-navigation-server.log" 2>&1 &
+WEBVIEW_SERVER_PID=$!
+WEBVIEW_SERVER_READY=false
+for attempt in {1..40}; do
+  if curl --silent --fail http://127.0.0.1:13992/navigation.html >/dev/null; then WEBVIEW_SERVER_READY=true; break; fi
+  sleep 0.1
+done
+if [ "$WEBVIEW_SERVER_READY" != true ]; then
+  echo "WKWebView smoke server did not start" >&2
+  exit 1
+fi
+DSH_WEBVIEW_SMOKE_PORT=13992 bin/webview-navigation-tests
+cleanup_webview_smoke
+trap - EXIT
 
 echo "== 快速提问会话状态单测 =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \

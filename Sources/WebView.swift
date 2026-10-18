@@ -13,18 +13,28 @@ struct WebView: NSViewRepresentable {
     let url: URL
     let reloadToken: Int
     let sessionToOpen: String?
+    let panelToOpen: WorkspacePanelRequest?
     let onSessionOpened: () -> Void
     let onSessionOpenFailed: (String) -> Void
+    let onPanelOpened: (String) -> Void
+    let onPanelOpenFailed: (String, String) -> Void
     @Binding var loadState: ClientPageState
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(loadState: $loadState, onSessionOpened: onSessionOpened, onSessionOpenFailed: onSessionOpenFailed)
+        Coordinator(
+            loadState: $loadState,
+            onSessionOpened: onSessionOpened,
+            onSessionOpenFailed: onSessionOpenFailed,
+            onPanelOpened: onPanelOpened,
+            onPanelOpenFailed: onPanelOpenFailed
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.userContentController.add(WeakScriptMessageHandler(context.coordinator), name: Coordinator.sessionMessageName)
+        config.userContentController.add(WeakScriptMessageHandler(context.coordinator), name: Coordinator.panelMessageName)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -38,55 +48,78 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onSessionOpened = onSessionOpened
         context.coordinator.onSessionOpenFailed = onSessionOpenFailed
+        context.coordinator.onPanelOpened = onPanelOpened
+        context.coordinator.onPanelOpenFailed = onPanelOpenFailed
         if context.coordinator.lastReloadToken != reloadToken || context.coordinator.lastURL != url {
             context.coordinator.lastReloadToken = reloadToken
             context.coordinator.lastURL = url
             context.coordinator.resetSessionRequest()
+            context.coordinator.resetDispatchedPanelRequest()
             context.coordinator.clientReady = false
             webView.load(URLRequest(url: url))
         }
         context.coordinator.openSession(sessionToOpen, in: webView)
+        context.coordinator.openPanel(panelToOpen, in: webView)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
         static let sessionMessageName = "dshDesktopOpenSession"
+        static let panelMessageName = "dshDesktopOpenPanel"
         var lastReloadToken = 0
         var lastURL: URL?
         private var loadState: Binding<ClientPageState>
         var onSessionOpened: () -> Void
         var onSessionOpenFailed: (String) -> Void
+        var onPanelOpened: (String) -> Void
+        var onPanelOpenFailed: (String, String) -> Void
         private var pendingSessionId: String?
         private var dispatchedSessionId: String?
         private var sessionTimeout: DispatchWorkItem?
+        private var pendingPanelRequest: WorkspacePanelRequest?
+        private var dispatchedPanelAttemptId: String?
+        private var panelTimeout: DispatchWorkItem?
         var clientReady = false
 
         init(loadState: Binding<ClientPageState>, onSessionOpened: @escaping () -> Void,
-             onSessionOpenFailed: @escaping (String) -> Void) {
+             onSessionOpenFailed: @escaping (String) -> Void,
+             onPanelOpened: @escaping (String) -> Void,
+             onPanelOpenFailed: @escaping (String, String) -> Void) {
             self.loadState = loadState
             self.onSessionOpened = onSessionOpened
             self.onSessionOpenFailed = onSessionOpenFailed
+            self.onPanelOpened = onPanelOpened
+            self.onPanelOpenFailed = onPanelOpenFailed
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             loadState.wrappedValue = .loading
             clientReady = false
+            dispatchedPanelAttemptId = nil
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             loadState.wrappedValue = .ready
             dispatchPendingSession(in: webView)
+            dispatchPendingPanel(in: webView)
         }
 
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
-            guard message.name == Self.sessionMessageName,
-                  message.frameInfo.isMainFrame,
+            guard message.frameInfo.isMainFrame,
                   let frameURL = message.frameInfo.request.url,
                   Self.isSameOrigin(frameURL, as: lastURL),
                   let body = message.body as? [String: Any] else { return }
+            if message.name == Self.panelMessageName {
+                handlePanelMessage(body, in: message.webView)
+                return
+            }
+            guard message.name == Self.sessionMessageName else { return }
             if body["ready"] as? Bool == true {
                 clientReady = true
-                if let webView = message.webView { dispatchPendingSession(in: webView) }
+                if let webView = message.webView {
+                    dispatchPendingSession(in: webView)
+                    dispatchPendingPanel(in: webView)
+                }
                 return
             }
             guard let sessionId = body["sessionId"] as? String,
@@ -98,6 +131,32 @@ struct WebView: NSViewRepresentable {
             finishSessionRequest()
         }
 
+        private func handlePanelMessage(_ body: [String: Any], in webView: WKWebView?) {
+            if body["ready"] as? Bool == true {
+                clientReady = true
+                if let webView {
+                    dispatchPendingSession(in: webView)
+                    dispatchPendingPanel(in: webView)
+                }
+                return
+            }
+            guard let request = pendingPanelRequest,
+                  let panelId = body["panelId"] as? String,
+                  let attemptId = body["attemptId"] as? String,
+                  request.acceptsAttemptAcknowledgement(
+                    panelId: panelId,
+                    attemptId: attemptId,
+                    dispatchedAttemptId: dispatchedPanelAttemptId
+                  ) else { return }
+            if body["opened"] as? Bool == true { finishPanelRequest(request.requestId) }
+            else {
+                finishPanelRequest(
+                    request.requestId,
+                    error: body["error"] as? String ?? "无法打开插件管理面板，请在工作区中手动打开。"
+                )
+            }
+        }
+
         private func finishSessionRequest(error: String? = nil) {
             pendingSessionId = nil
             dispatchedSessionId = nil
@@ -107,6 +166,19 @@ struct WebView: NSViewRepresentable {
                 guard let self else { return }
                 if let error { self.onSessionOpenFailed(error) }
                 else { self.onSessionOpened() }
+            }
+        }
+
+        private func finishPanelRequest(_ requestId: String, error: String? = nil) {
+            guard pendingPanelRequest?.requestId == requestId else { return }
+            pendingPanelRequest = nil
+            dispatchedPanelAttemptId = nil
+            panelTimeout?.cancel()
+            panelTimeout = nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let error { self.onPanelOpenFailed(requestId, error) }
+                else { self.onPanelOpened(requestId) }
             }
         }
 
@@ -221,6 +293,35 @@ struct WebView: NSViewRepresentable {
             sessionTimeout = nil
         }
 
+        func resetDispatchedPanelRequest() { dispatchedPanelAttemptId = nil }
+
+        func openPanel(_ request: WorkspacePanelRequest?, in webView: WKWebView) {
+            guard let request else {
+                if let pending = pendingPanelRequest {
+                    finishPanelRequest(pending.requestId, error: "插件管理页请求已取消。")
+                }
+                return
+            }
+            guard request.panelId == "plugins",
+                  WorkspacePanelRequest.isValidRequestId(request.requestId) else {
+                finishPanelRequest(request.requestId, error: "插件管理页请求无效，请在工作区中手动打开。")
+                return
+            }
+            if pendingPanelRequest?.requestId != request.requestId {
+                panelTimeout?.cancel()
+                pendingPanelRequest = request
+                dispatchedPanelAttemptId = nil
+                let requestId = request.requestId
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard self?.pendingPanelRequest?.requestId == requestId else { return }
+                    self?.finishPanelRequest(requestId, error: "客户端没有完成打开插件管理页，请在工作区中手动打开后重试。")
+                }
+                panelTimeout = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: timeout)
+            }
+            dispatchPendingPanel(in: webView)
+        }
+
         func openSession(_ sessionId: String?, in webView: WKWebView) {
             guard let sessionId, !sessionId.isEmpty else {
                 resetSessionRequest()
@@ -257,6 +358,29 @@ struct WebView: NSViewRepresentable {
                 guard error == nil else {
                     DispatchQueue.main.async {
                         self?.finishSessionRequest(error: "客户端页面拒绝了任务定位，请刷新后重试。")
+                    }
+                    return
+                }
+            }
+        }
+
+        private func dispatchPendingPanel(in webView: WKWebView) {
+            guard let request = pendingPanelRequest,
+                  clientReady,
+                  dispatchedPanelAttemptId == nil,
+                  !webView.isLoading,
+                  webView.url.map({ Self.isSameOrigin($0, as: lastURL) }) == true else { return }
+            let attemptId = UUID().uuidString.lowercased()
+            guard let data = try? JSONSerialization.data(withJSONObject: ["panelId": request.panelId, "attemptId": attemptId]),
+                  let payload = String(data: data, encoding: .utf8) else { return }
+            dispatchedPanelAttemptId = attemptId
+            let logicalRequestId = request.requestId
+            webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('dsh-desktop-open-panel', { detail: \(payload) }));") { [weak self] _, error in
+                guard error == nil else {
+                    DispatchQueue.main.async {
+                        guard self?.pendingPanelRequest?.requestId == logicalRequestId,
+                              self?.dispatchedPanelAttemptId == attemptId else { return }
+                        self?.finishPanelRequest(logicalRequestId, error: "客户端页面拒绝了插件管理页导航，请刷新后重试。")
                     }
                     return
                 }

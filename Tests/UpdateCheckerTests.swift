@@ -10,6 +10,11 @@ struct UpdateCheckerTests {
             else { failures += 1; print("FAIL  \(label)") }
         }
 
+        expect(ControlCenterSection.allCases == [.overview, .plugins, .recovery, .settings],
+               "control center sections retain the task order")
+        expect(ControlCenterSection.allCases.map(\.title) == ["概览", "插件与兼容", "恢复与版本", "桌面端设置"],
+               "control center labels name all four task domains")
+
         if let testHome = ProcessInfo.processInfo.environment["DSH_HOME"] {
             expect(ServerManager.webAccessURLFile == "\(testHome)/guardian/web-access-url", "isolated authentication file")
             expect(ServerManager.launchScript == "\(testHome)/dsh-desktop/launch.sh", "isolated launcher")
@@ -24,6 +29,43 @@ struct UpdateCheckerTests {
         var changedEngine = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"engine\":\"0.3.0\"}".utf8))
         changedEngine.retainPluginCompatibility(from: previous)
         expect(changedEngine.pluginCompatibility == nil, "engine change clears prior plugin status")
+        let compatibilityJSON = #"{"ok":true,"pluginCompatibility":{"scope":"candidate","engineVersion":"0.4.0-rc.1","checkedAt":"2026-10-18T00:00:00.000Z","checked":true,"issues":[{"id":"test-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"missing-package","required":"^1.0.0","actual":null,"classification":"unresolved"}]}]}}"#
+        let compatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(compatibilityJSON.utf8))
+        expect(compatibilityResponse.pluginCompatibility?.scope == "candidate", "candidate compatibility scope decodes")
+        expect(compatibilityResponse.pluginCompatibility?.scopeLabel == "候选引擎", "candidate compatibility scope is labeled explicitly")
+        expect(compatibilityResponse.pluginCompatibility?.engineVersion == "0.4.0-rc.1", "compatibility engine version decodes")
+        expect(compatibilityResponse.pluginCompatibility?.checkedAt == "2026-10-18T00:00:00.000Z", "compatibility check time decodes")
+        expect(compatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == "unresolved", "unresolved dependency classification decodes")
+        let findings = try! JSONDecoder().decode(GuardianPluginIssue.self, from: Data(#"{"id":"evidence-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"confirmed","required":"^1.0.0","actual":"2.0.0","classification":"range-mismatch"},{"name":"unknown","required":"^1.0.0","actual":null,"classification":"unresolved"}]}"#.utf8))
+        expect(findings.confirmedMismatches.map(\.name) == ["confirmed"], "only confirmed range mismatches are compatibility risks")
+        expect(findings.unresolvedFindings.map(\.name) == ["unknown"], "unresolved dependency findings stay separate")
+        let legacyCompatibilityJSON = #"{"ok":true,"pluginCompatibility":{"checked":true,"issues":[{"id":"legacy-plugin","version":"1.0.0","enabled":true,"issues":[{"name":"legacy-dependency","required":"^1.0.0","actual":"2.0.0"}]}]}}"#
+        let legacyCompatibilityResponse = try! JSONDecoder().decode(GuardianResponse.self, from: Data(legacyCompatibilityJSON.utf8))
+        expect(legacyCompatibilityResponse.pluginCompatibility?.issues.first?.issues.first?.classification == nil, "legacy dependency without classification decodes")
+        let unknownScope = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data(#"{"checked":true,"issues":[]}"#.utf8))
+        expect(unknownScope.scopeLabel == "检查范围无法确认", "missing compatibility scope stays unknown")
+        let currentScope = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data(#"{"scope":"current","checked":true,"issues":[]}"#.utf8))
+        expect(currentScope.scopeLabel == "当前引擎", "current compatibility scope is labeled explicitly")
+        let mismatchJSON = #"{"checked":true,"issues":[{"id":"plugin","enabled":true,"issues":[{"name":"dep","required":"^1","actual":"2","classification":"range-mismatch"}]}]}"#
+        let candidateMismatch = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data((#"{"scope":"candidate","checked":true,"issues":[{"id":"plugin","enabled":true,"issues":[{"name":"dep","required":"^1","actual":"2","classification":"range-mismatch"}]}]}"#).utf8))
+        let currentMismatch = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data((#"{"scope":"current","checked":true,"issues":[{"id":"plugin","enabled":true,"issues":[{"name":"dep","required":"^1","actual":"2","classification":"range-mismatch"}]}]}"#).utf8))
+        let unknownMismatch = try! JSONDecoder().decode(GuardianPluginCompatibility.self, from: Data(mismatchJSON.utf8))
+        expect(candidateMismatch.mismatchRecommendation?.contains("是否继续使用候选引擎") == true, "candidate mismatch recommendation supports a candidate continuation decision")
+        expect(currentMismatch.mismatchRecommendation?.contains("当前引擎") == true && currentMismatch.mismatchRecommendation?.contains("候选") == false, "current mismatch recommendation stays accurate to the current engine")
+        expect(unknownMismatch.mismatchRecommendation?.contains("检查范围无法确认") == true && unknownMismatch.mismatchRecommendation?.contains("候选") == false, "unknown scope recommendation remains explicit and candidate-neutral")
+        var candidateToClear: GuardianPluginCompatibility? = candidateMismatch
+        var deepRefreshRequested = false
+        GuardianPluginCompatibility.prepareCurrentRefresh(candidate: &candidateToClear) { deepRefreshRequested = $0 }
+        expect(candidateToClear == nil && deepRefreshRequested, "current compatibility refresh clears candidate priority before requesting a deep refresh")
+        let firstPanelRequest = WorkspacePanelRequest(panelId: "plugins")
+        let retryPanelRequest = WorkspacePanelRequest(panelId: "plugins")
+        expect(firstPanelRequest.requestId != retryPanelRequest.requestId, "plugin panel retries use unique request identifiers")
+        expect(!firstPanelRequest.acceptsAttemptAcknowledgement(panelId: "plugins", attemptId: "attempt_1", dispatchedAttemptId: "attempt_2"), "late pre-reload attempt acknowledgement is rejected for the preserved request")
+        expect(firstPanelRequest.acceptsAttemptAcknowledgement(panelId: "plugins", attemptId: "attempt_2", dispatchedAttemptId: "attempt_2"), "reloaded request accepts only its new attempt acknowledgement")
+        expect(!firstPanelRequest.acceptsAttemptAcknowledgement(panelId: "plugins", attemptId: "attempt_2", dispatchedAttemptId: "attempt_1"), "acknowledgement for an attempt not currently dispatched is rejected")
+        expect(!firstPanelRequest.acceptsAttemptAcknowledgement(panelId: "settings", attemptId: "attempt_2", dispatchedAttemptId: "attempt_2"), "acknowledgement for a different panel is rejected")
+        expect(!firstPanelRequest.acceptsAttemptAcknowledgement(panelId: "plugins", attemptId: "bad/id", dispatchedAttemptId: "bad/id"), "malformed acknowledgement attempt identifiers are rejected")
+        expect(!firstPanelRequest.acceptsAttemptAcknowledgement(panelId: "plugins", attemptId: String(repeating: "x", count: 129), dispatchedAttemptId: String(repeating: "x", count: 129)), "oversized acknowledgement attempt identifiers are rejected")
         let runningSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":true,\"mode\":\"safe\"}".utf8))
         let stoppedSafe = try! JSONDecoder().decode(GuardianResponse.self, from: Data("{\"ok\":true,\"up\":false,\"mode\":\"safe\"}".utf8))
         expect(runningSafe.isRunningInSafeMode, "safe mode warning requires a running service")

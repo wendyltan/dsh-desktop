@@ -80,11 +80,11 @@ struct SettingsView: View {
                     }
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    ShortcutRecorder(title: "当前状态", shortcut: store.settings.guardianShortcut) {
+                    ShortcutRecorder(title: "控制中心", shortcut: store.settings.guardianShortcut) {
                         store.updateGuardianShortcut($0)
                     }
                     if let error = store.guardianShortcutError {
-                        Text(error).font(.caption).foregroundStyle(.red).accessibilityLabel("当前状态快捷键错误：\(error)")
+                        Text(error).font(.caption).foregroundStyle(.red).accessibilityLabel("控制中心快捷键错误：\(error)")
                     }
                 }
                 Text("点击后按下新组合键即可修改，按 Esc 取消；改动立即生效。")
@@ -188,7 +188,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 630)
         .onAppear {
             intervalMinutes = max(1, store.settings.balanceRefreshSeconds / 60)
             threshold = store.settings.balanceWarningThreshold
@@ -210,29 +209,5 @@ struct SettingsView: View {
 
     private func saveBalance() {
         store.updateBalanceSettings(refreshSeconds: max(60, intervalMinutes * 60), threshold: threshold)
-    }
-}
-
-/// 设置窗口控制器（普通窗口，非浮动面板）。
-final class SettingsWindowController: NSObject, NSWindowDelegate {
-    private var window: NSWindow?
-
-    func show(store: AppStore) {
-        if window == nil {
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 630),
-                styleMask: [.titled, .closable],
-                backing: .buffered, defer: false
-            )
-            window.title = "DeepSeek Harness 设置"
-            window.isReleasedWhenClosed = false
-            window.delegate = self
-            window.contentViewController = NSHostingController(rootView: SettingsView().environmentObject(store))
-            window.center()
-            self.window = window
-        }
-        guard let window else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
     }
 }

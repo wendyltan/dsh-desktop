@@ -35,6 +35,40 @@ struct QuickPromptPanelTests {
         let panel = QuickPromptPanelController()
         let first = BridgeSession(sessionId: "one", title: "One", cwd: "/one", live: true)
         let second = BridgeSession(sessionId: "two", title: "Two", cwd: "/two", live: true)
+        var openedSessionId: String?
+        let completionModel = QuickPromptModel()
+        let submittedText = "提问 A"
+        completionModel.text = submittedText
+        completionModel.text = "提问 B"
+        completionModel.completeSend(to: second.sessionId, submittedText: submittedText)
+        expect(completionModel.sentSessionId == second.sessionId, "successful send keeps the destination session visible")
+        expect(completionModel.status.contains(second.sessionId), "success status names its destination session")
+        expect(completionModel.text == "提问 B", "completion of A preserves a newer draft B")
+        completionModel.text = submittedText
+        completionModel.completeSend(to: second.sessionId, submittedText: submittedText)
+        expect(completionModel.text.isEmpty, "completion clears the submitted draft when it is unchanged")
+        completionModel.startNewPrompt()
+        expect(completionModel.sentSessionId == nil, "new prompt clears the prior success result")
+
+        panel.onOpenSession = { openedSessionId = $0 }
+        let panelModel = Mirror(reflecting: panel).children.first(where: { $0.label == "model" })?.value as? QuickPromptModel
+        panelModel?.completeSend(to: second.sessionId, submittedText: "")
+        panel.openSentSession(second.sessionId)
+        expect(openedSessionId == second.sessionId, "open-session action forwards the successful destination")
+        expect(panelModel?.sentSessionId == nil, "opening a session dismisses the transient success state")
+
+        let closePanel = QuickPromptPanelController()
+        let closeModel = Mirror(reflecting: closePanel).children.first(where: { $0.label == "model" })?.value as? QuickPromptModel
+        closeModel?.completeSend(to: second.sessionId, submittedText: "")
+        closePanel.close()
+        expect(closeModel?.sentSessionId == nil, "closing the panel dismisses the transient success state")
+
+        let redClosePanel = QuickPromptPanelController()
+        let redCloseModel = Mirror(reflecting: redClosePanel).children.first(where: { $0.label == "model" })?.value as? QuickPromptModel
+        redCloseModel?.completeSend(to: second.sessionId, submittedText: "")
+        redClosePanel.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: NSWindow()))
+        expect(redCloseModel?.sentSessionId == nil, "red window close dismisses the transient success state")
+
         panel.sessions = [first, second]
         panel.selectedSessionId = second.sessionId
         panel.sessions = [first, second]
@@ -62,9 +96,11 @@ struct QuickPromptPanelTests {
             BridgeSession(sessionId: "session-123456", title: "同名会话", cwd: "/work/project", live: true),
             BridgeSession(sessionId: "session-abcdef", title: "同名会话", cwd: "/work/project", live: true),
         ]
-        let labelView = QuickPromptView(model: model!, send: {}, openClient: {}, close: {}, sessionChanged: { _ in }, onRetrySessions: nil)
+        let labelView = QuickPromptView(model: model!, send: {}, openClient: {}, openSession: { _ in }, close: {}, sessionChanged: { _ in }, onRetrySessions: nil)
         let labels = duplicateTitleSessions.map { labelView.sessionLabel(for: $0, among: duplicateTitleSessions) }
         expect(labels[0] != labels[1] && labels.allSatisfy { $0.contains("project") }, "same-title same-directory sessions get distinct readable labels")
+        model?.sessions = duplicateTitleSessions
+        expect(labelView.sentSessionLabel(for: duplicateTitleSessions[1].sessionId) == labels[1], "success handoff uses duplicate-title disambiguation")
 
         panel.modelsLoading = true
         expect(panel.modelsLoading && panel.modelsError == nil, "model list exposes loading state")

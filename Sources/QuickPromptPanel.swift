@@ -1,9 +1,11 @@
 import SwiftUI
 import AppKit
+import Combine
 
 final class QuickPromptModel: ObservableObject {
     @Published var text = ""
     @Published var status = "⌘↩ 发送 · Esc 关闭"
+    @Published var sentSessionId: String?
     @Published var sending = false
     @Published var connected = false
     @Published var shortcutHint = ""
@@ -47,12 +49,27 @@ final class QuickPromptModel: ObservableObject {
         models = []
         modelsError = message
     }
+
+    func completeSend(to sessionId: String, submittedText: String) {
+        sentSessionId = sessionId
+        if text == submittedText { text = "" }
+        status = "已发送到会话 \(sessionId)"
+    }
+
+    func dismissSuccess() {
+        guard sentSessionId != nil else { return }
+        sentSessionId = nil
+        status = "⌘↩ 发送 · Esc 关闭"
+    }
+
+    func startNewPrompt() { dismissSuccess() }
 }
 
 struct QuickPromptView: View {
     @ObservedObject var model: QuickPromptModel
     let send: () -> Void
     let openClient: () -> Void
+    let openSession: (String) -> Void
     let close: () -> Void
     let sessionChanged: (String?) -> Void
     let onRetrySessions: (() -> Void)?
@@ -72,6 +89,11 @@ struct QuickPromptView: View {
         guard sessions.filter({ $0.title == session.title }).count > 1 else { return session.title }
         let directory = session.cwd.isEmpty ? "目录未知" : URL(fileURLWithPath: session.cwd).lastPathComponent
         return "\(session.title) · \(directory) · \(session.sessionId.suffix(6))"
+    }
+
+    func sentSessionLabel(for sessionId: String) -> String {
+        guard let session = model.sessions.first(where: { $0.sessionId == sessionId }) else { return sessionId }
+        return sessionLabel(for: session, among: model.sessions)
     }
 
     private var statusIcon: String {
@@ -128,6 +150,19 @@ struct QuickPromptView: View {
                             .padding(.vertical, 5)
                             .background(.regularMaterial, in: Capsule())
                     }
+                }
+
+                if let sentSessionId = model.sentSessionId {
+                    HStack(spacing: 10) {
+                        Label("已发送到 \(sentSessionLabel(for: sentSessionId))", systemImage: "checkmark.circle.fill")
+                            .accessibilityValue(model.status)
+                            .lineLimit(1)
+                        Spacer()
+                        Button("打开会话") { openSession(sentSessionId) }
+                        Button("新提问") { model.startNewPrompt(); focused = true }
+                        Button("关闭", action: close)
+                    }
+                    .font(.callout)
                 }
 
                 if !model.summary.isEmpty {
@@ -246,6 +281,7 @@ struct QuickPromptView: View {
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $model.text)
                         .font(.body)
+                        .accessibilityLabel("提问内容")
                         .scrollContentBackground(.hidden)
                         .padding(10)
                         .background(Color(nsColor: .textBackgroundColor).opacity(0.72))
@@ -271,6 +307,8 @@ struct QuickPromptView: View {
                         .font(.caption)
                         .foregroundStyle(statusColor)
                         .lineLimit(2)
+                        .accessibilityLabel("发送状态")
+                        .accessibilityValue(model.status)
 
                     Spacer()
 
@@ -302,7 +340,7 @@ struct QuickPromptView: View {
         }
         .frame(width: 680, height: 560)
         .onAppear { focused = true }
-        .onChange(of: model.selectedSessionId) { sessionChanged($0) }
+        .onReceive(model.$selectedSessionId.dropFirst()) { sessionChanged($0) }
         .onExitCommand(perform: close)
     }
 }
@@ -318,6 +356,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     var onModelChange: ((String?) -> Void)?
     var onEffortChange: ((String?) -> Void)?
     var onSentSession: ((String) -> Void)?
+    var onOpenSession: ((String) -> Void)?
     var onOpenClient: (() -> Void)?
     var onMetric: ((NativeMetric, String?) -> Void)?
 
@@ -404,7 +443,19 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
         onMetric?(.quickPromptOpened, nil)
     }
 
-    func close() { panel?.orderOut(nil) }
+    func close() {
+        model.dismissSuccess()
+        panel?.orderOut(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        model.dismissSuccess()
+    }
+
+    func openSentSession(_ sessionId: String) {
+        onOpenSession?(sessionId)
+        close()
+    }
 
     private func makePanel() {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
@@ -421,6 +472,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
             model: model,
             send: { [weak self] in self?.submit() },
             openClient: { [weak self] in self?.onOpenClient?() },
+            openSession: { [weak self] in self?.openSentSession($0) },
             close: { [weak self] in self?.close() },
             sessionChanged: { [weak self] sessionId in self?.onSessionChange?(sessionId) },
             onRetrySessions: { [weak self] in self?.onRetrySessions?() },
@@ -433,7 +485,8 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
     }
 
     private func submit() {
-        let prompt = model.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedText = model.text
+        let prompt = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !model.sending else { return }
         let existing = model.mode == "existing"
         guard !existing || (!model.sessionsLoading && model.sessionsError == nil
@@ -457,9 +510,7 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
             case .success(let sessionId):
                 self.onMetric?(.quickPromptSent, nil)
                 self.onSentSession?(sessionId)
-                self.model.text = ""
-                self.model.status = "已发送"
-                self.close()
+                self.model.completeSend(to: sessionId, submittedText: submittedText)
             case .failure(let error):
                 self.onMetric?(.quickPromptFailed, "send-failed")
                 self.model.status = error.localizedDescription

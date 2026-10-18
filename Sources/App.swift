@@ -39,17 +39,17 @@ struct DeepSeekHarnessApp: App {
                 }
             }
             CommandGroup(after: .appInfo) {
-                Button("检查更新…") { store.checkUpdate(force: true) }
+                Button("检查 Harness 引擎更新…") { store.checkUpdate(force: true) }
             }
             CommandGroup(replacing: .appSettings) {
-                Button("设置…") { store.openSettings() }
+                Button("桌面端设置…") { store.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
             }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .toolbar) {
-                if ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" {
+                if Bundle.main.bundleIdentifier == "com.dsh.desktop.test" {
                     Button("快速提问…") { store.showQuickPrompt() }
-                    Button("当前状态…") { store.showGuardianPanel() }
+                    Button("控制中心…") { store.showGuardianPanel() }
                     Button("发送会话导航测试通知") { store.sendNavigationTestNotification() }
                 }
             }
@@ -69,12 +69,23 @@ struct ContentView: View {
                 url: ServerManager.clientURL,
                 reloadToken: store.reloadToken,
                 sessionToOpen: store.pendingSessionId,
+                panelToOpen: store.pendingWorkspacePanel,
                 onSessionOpened: {
                     store.pendingSessionId = nil
                     store.nativeActionMessage = ""
                 },
                 onSessionOpenFailed: { error in
                     store.pendingSessionId = nil
+                    store.nativeActionMessage = error
+                },
+                onPanelOpened: { requestId in
+                    guard store.pendingWorkspacePanel?.requestId == requestId else { return }
+                    store.pendingWorkspacePanel = nil
+                    store.nativeActionMessage = ""
+                },
+                onPanelOpenFailed: { requestId, error in
+                    guard store.pendingWorkspacePanel?.requestId == requestId else { return }
+                    store.pendingWorkspacePanel = nil
                     store.nativeActionMessage = error
                 },
                 loadState: $pageState

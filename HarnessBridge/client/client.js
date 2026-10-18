@@ -1,13 +1,15 @@
 window.__ModuleLoader__.load({
   id: 'dsh-desktop-bridge',
   factory: () => {
-    const inject = ['uiWorkspace', 'sessions']
+    const inject = ['uiWorkspace', 'sessions', 'layout']
     const name = 'dsh-desktop-bridge'
 
     function apply(ctx) {
       ctx.effect(() => {
         const handler = window.webkit?.messageHandlers?.dshDesktopOpenSession
+        const panelHandler = window.webkit?.messageHandlers?.dshDesktopOpenPanel
         const acknowledge = (body) => handler?.postMessage(body)
+        const acknowledgePanel = (body) => panelHandler?.postMessage(body)
         let disposePending
 
         const openSession = (event) => {
@@ -57,10 +59,34 @@ window.__ModuleLoader__.load({
           checkSelection()
         }
 
+        const openPanel = (event) => {
+          const panelId = event.detail?.panelId
+          const attemptId = event.detail?.attemptId
+          if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(attemptId)) {
+            acknowledgePanel({ panelId: typeof panelId === 'string' ? panelId : '', attemptId: '', opened: false, error: '插件管理页请求编号无效。' })
+            return
+          }
+          if (panelId !== 'plugins') {
+            acknowledgePanel({ panelId: typeof panelId === 'string' ? panelId : '', attemptId, opened: false, error: '只支持打开插件管理面板。' })
+            return
+          }
+          try {
+            Promise.resolve(ctx.layout.selectPanel('plugins')).then(
+              () => acknowledgePanel({ panelId, attemptId, opened: true }),
+              () => acknowledgePanel({ panelId, attemptId, opened: false, error: '无法打开插件管理面板，请在工作区中手动打开。' }),
+            )
+          } catch {
+            acknowledgePanel({ panelId, attemptId, opened: false, error: '无法打开插件管理面板，请在工作区中手动打开。' })
+          }
+        }
+
         window.addEventListener('dsh-desktop-open-session', openSession)
+        window.addEventListener('dsh-desktop-open-panel', openPanel)
         acknowledge({ ready: true })
+        acknowledgePanel({ ready: true })
         return () => {
           window.removeEventListener('dsh-desktop-open-session', openSession)
+          window.removeEventListener('dsh-desktop-open-panel', openPanel)
           disposePending?.('客户端页面已关闭，任务定位未完成。')
         }
       }, 'dsh-desktop-bridge: session navigation')
