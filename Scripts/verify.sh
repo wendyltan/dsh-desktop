@@ -80,6 +80,11 @@ swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   -framework Carbon -framework AppKit -o bin/global-hotkey-tests
 bin/global-hotkey-tests
 
+echo "== 客户端窗口生命周期与菜单入口回归 =="
+swiftc -parse-as-library -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
+  Tests/AppLifecycleSourceTests.swift -o bin/app-lifecycle-source-tests
+bin/app-lifecycle-source-tests
+
 echo "== Guardian 集成验证 =="
 node Guardian/verify.mjs
 if [ "${1:-}" = "--installed-engines" ]; then
