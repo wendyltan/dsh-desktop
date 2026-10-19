@@ -48,9 +48,9 @@
 
 **Interfaces:** Consume Task 1 channel names and safety behavior; no new runtime behavior.
 
-- [ ] Document all three channels, alternate-version messages and preview recovery limits.
-- [ ] Run `Scripts/verify.sh --installed-engines`, `build.sh --test`, macOS 13 typecheck, `git diff --check`; record exact outcomes.
-- [ ] Independent review; fix material findings with regression evidence.
-- [ ] Verify test-app selected latest/next UI using real registry reads without installing an engine.
+- [x] Document all three channels, alternate-version messages and preview recovery limits.
+- [x] Run `Scripts/verify.sh --installed-engines`, `build.sh --test`, macOS 13 typecheck, `git diff --check`; record exact outcomes.
+- [x] Independent review; fix material findings with regression evidence.
+- [x] Verify test-app selected latest/next UI using real registry reads without installing an engine.
 - [ ] Commit/tag; integrate and install the desktop build under existing task authorization, preserving the running engine and checking installed hashes/signature/runtime.
 - [ ] Report engine-install acceptance NOT RUN and human acceptance pending.

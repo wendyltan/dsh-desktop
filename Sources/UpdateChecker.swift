@@ -25,6 +25,21 @@ enum EngineUpdateChannel: String, CaseIterable, Codable, Hashable, Identifiable 
     var isPreview: Bool { self != .latest }
 }
 
+struct EngineUpdateCheckState {
+    private var generation = 0
+    private var updating = false
+
+    mutating func beginCheck() -> Int? {
+        guard !updating else { return nil }
+        generation += 1
+        return generation
+    }
+
+    mutating func beginUpdate() { updating = true; generation += 1 }
+    mutating func finishUpdate() { generation += 1; updating = false }
+    func accepts(_ check: Int) -> Bool { !updating && check == generation }
+}
+
 struct EngineUpdateCatalog {
     let versions: [EngineUpdateChannel: String]
     let selectedChannel: EngineUpdateChannel

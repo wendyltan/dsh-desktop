@@ -175,6 +175,7 @@ struct SettingsView: View {
                         Text(channel.title).tag(channel)
                     }
                 }
+                .disabled(store.updateBusy)
                 Text(store.settings.engineUpdateChannel.explanation)
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -182,6 +183,7 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("立即检查") { store.checkUpdate(force: true) }
+                        .disabled(store.updateBusy)
                 }
             } header: {
                 Label("引擎更新", systemImage: "arrow.down.circle")

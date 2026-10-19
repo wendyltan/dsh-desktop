@@ -898,13 +898,13 @@ final class AppStore: NSObject, ObservableObject {
     @Published var engineRetentionMandatory = false
     private var updateTimer: Timer?
     private var engineProgressTimer: Timer?
-    private var updateCheckGeneration = 0
+    private var updateChecks = EngineUpdateCheckState()
     private var checkedUpdateChannel: EngineUpdateChannel?
     private var activeUpdateChannel: EngineUpdateChannel?
 
     /// 检查 npm 上 harness 引擎是否有新版本。force=true 时无论结果都弹窗。
     func updateEngineChannel(_ channel: EngineUpdateChannel) {
-        guard settings.engineUpdateChannel != channel else { return }
+        guard !updateBusy, settings.engineUpdateChannel != channel else { return }
         settings.engineUpdateChannel = channel
         settings.dismissedUpdateVersion = nil
         settings.save()
@@ -914,15 +914,14 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func checkUpdate(force: Bool = false, bypassCache: Bool = false) {
+        guard let generation = updateChecks.beginCheck() else { return }
         if force { showClientPanel() }
-        updateCheckGeneration += 1
-        let generation = updateCheckGeneration
         let channel = settings.engineUpdateChannel
         DispatchQueue.global(qos: .utility).async {
             let installed = UpdateChecker.resolveInstalledEngine()
             let (catalog, err) = UpdateChecker.checkCatalog(channel: channel, bypassCache: force || bypassCache)
             DispatchQueue.main.async {
-                guard generation == self.updateCheckGeneration else { return }
+                guard self.updateChecks.accepts(generation) else { return }
                 guard let installed else {
                     self.clearUpdateAvailability()
                     self.updateMessage = "检查更新失败：未能识别当前运行的 Harness 引擎版本。"
@@ -944,7 +943,7 @@ final class AppStore: NSObject, ObservableObject {
                 self.updateAvailable = newer && self.settings.dismissedUpdateVersion != latest
                 self.refreshUpdateMenuItem()
                 self.updateMessage = newer
-                    ? "发现\(channel.title)：\(latest)（当前 \(installed)）\n\n更新会依次下载、检查能否正常启动、应用更新，并确认 DeepSeek Harness 可用；若无法完成，会保留当前可用状态。"
+                    ? "发现\(channel.title)：\(latest)（当前 \(installed)）\n\n更新会依次下载、检查能否正常启动、应用更新，并确认服务状态。旧引擎会保留；回退仍须通过会话格式检查，以保护原数据。"
                     : "当前引擎为 \(installed)，没有比它更新的\(channel.title)引擎。"
                 if !newer, channel == .latest, installed.contains("-alpha") {
                     self.updateMessage += "\n\n当前 alpha 版本高于 latest；如需回到默认版本，请在“当前状态 → 管理引擎版本”中切换。"
@@ -974,7 +973,9 @@ final class AppStore: NSObject, ObservableObject {
         activeUpdateChannel = channel
         engineRetentionVersion = nil
         engineRetentionMandatory = false
+        updateChecks.beginUpdate()
         updateBusy = true
+        clearUpdateAvailability()
         updateProgressPercent = 10
         showUpdateAlert = false
         updateMessage = "第 1 步（共 4 步）：正在下载更新…"
@@ -984,12 +985,15 @@ final class AppStore: NSObject, ObservableObject {
             let (response, error) = GuardianService.run("update", args: ["--version", version, "--channel", channel.rawValue])
             DispatchQueue.main.async {
                 self.updateBusy = false
+                self.updateChecks.finishUpdate()
                 self.updateProgressPercent = nil
                 self.engineProgressTimer?.invalidate()
                 self.engineProgressTimer = nil
                 self.refreshUpdateMenuItem()
                 let updateChannel = self.activeUpdateChannel ?? .latest
                 self.activeUpdateChannel = nil
+                self.refreshServerStatus()
+                self.refreshGuardian(deep: true)
                 if let response {
                     if response.updated == true {
                         self.candidatePluginCompatibility = nil
@@ -999,7 +1003,7 @@ final class AppStore: NSObject, ObservableObject {
                 }
                 if let error {
                     self.engineRetentionMandatory = false
-                    self.updateMessage = "更新没有完成，但此前能正常运行的版本仍在使用。\n\n技术原因：\(error)"
+                    self.updateMessage = "更新未完成。正在重新检查服务状态，请在控制中心的“概览”中确认是否已恢复。\n\n技术原因：\(error)"
                     self.showUpdateAlert = true
                     return
                 }
@@ -1017,12 +1021,10 @@ final class AppStore: NSObject, ObservableObject {
                         }
                     }
                     self.refreshUpdateMenuItem()
-                    self.refreshServerStatus()
-                    self.refreshGuardian(deep: true)
                     self.showUpdateAlert = true
                 } else {
                     self.engineRetentionMandatory = false
-                    self.updateMessage = "更新没有完成，但此前能正常运行的版本仍在使用。\n\n技术原因：\(response?.displayError ?? "未返回具体原因")"
+                    self.updateMessage = "更新未完成。正在重新检查服务状态，请在控制中心的“概览”中确认是否已恢复。\n\n技术原因：\(response?.displayError ?? "未返回具体原因")"
                     self.showUpdateAlert = true
                 }
             }

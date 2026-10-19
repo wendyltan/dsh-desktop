@@ -113,6 +113,16 @@ struct UpdateCheckerTests {
         expect(latestCatalog.newerAlternatives(than: "2.0.0").map(\.channel) == [.next], "alternatives exclude selected and non-newer channels")
         expect(latestCatalog.newerAlternativeMessage(than: "2.0.0")?.contains("候选版本（next） v2.1.0") == true, "up-to-date latest result names the newer next release")
         expect(latestCatalog.newerAlternativeMessage(than: "2.0.0")?.contains("设置中选择对应更新通道") == true && latestCatalog.newerAlternativeMessage(than: "2.0.0")?.contains("不会自动切换或安装") == true, "alternate release message explains explicit selection without auto-install")
+        var updateChecks = EngineUpdateCheckState()
+        let beforeUpdate = updateChecks.beginCheck()!
+        expect(updateChecks.accepts(beforeUpdate), "current update check can publish before installation")
+        updateChecks.beginUpdate()
+        expect(!updateChecks.accepts(beforeUpdate), "starting an update invalidates an in-flight check")
+        expect(updateChecks.beginCheck() == nil, "checks cannot start while an engine update is running")
+        updateChecks.finishUpdate()
+        expect(!updateChecks.accepts(beforeUpdate), "late pre-update result cannot offer a downgrade after completion")
+        let afterUpdate = updateChecks.beginCheck()!
+        expect(updateChecks.accepts(afterUpdate), "fresh checks are allowed after an engine update completes")
 
         // Guardian engine.json 指向的 .bin/dsh 符号链接应解析到真实引擎包。
         let fm = FileManager.default
