@@ -95,11 +95,24 @@ struct UpdateCheckerTests {
         expect(UpdateChecker.isNewer("1.0.0-rc.10", than: "1.0.0-rc.9"), "rc.10 > rc.9")
 
         let npmPackument: [String: Any] = [
-            "dist-tags": ["latest": "0.1.1-rc.2", "alpha": "0.1.2-alpha.3"],
+            "dist-tags": ["latest": "0.1.1-rc.2", "next": "0.1.3-rc.1", "alpha": "0.1.2-alpha.3"],
         ]
         expect(UpdateChecker.channelVersion(from: npmPackument, channel: .latest) == "0.1.1-rc.2", "latest channel tag")
+        expect(UpdateChecker.channelVersion(from: npmPackument, channel: .next) == "0.1.3-rc.1", "next channel tag")
         expect(UpdateChecker.channelVersion(from: npmPackument, channel: .alpha) == "0.1.2-alpha.3", "alpha channel tag")
         expect(UpdateChecker.isNewer("0.1.2-alpha.3", than: "0.1.1-rc.2"), "alpha channel version comparison")
+        let catalog = EngineUpdateCatalog(packument: npmPackument, selectedChannel: .latest)
+        expect(catalog.selectedVersion == "0.1.1-rc.2", "selected version stays on the selected channel")
+        expect(catalog.newerAlternatives(than: "0.1.1-rc.2").map { ($0.channel, $0.version) }.contains { $0.0 == .next && $0.1 == "0.1.3-rc.1" }, "newer next channel is reported as an alternative")
+        let encodedNext = try! JSONEncoder().encode(EngineUpdateChannel.next)
+        expect(try! JSONDecoder().decode(EngineUpdateChannel.self, from: encodedNext) == .next, "next channel persists through Codable round trip")
+        let malformedAlternatives: [String: Any] = ["dist-tags": ["latest": "1.2.3", "next": "bad", "alpha": "invalid"]]
+        expect(EngineUpdateCatalog(packument: malformedAlternatives, selectedChannel: .latest).selectedVersion == "1.2.3", "invalid alternate tags do not invalidate selected latest")
+        expect(EngineUpdateCatalog(packument: malformedAlternatives, selectedChannel: .next).selectedVersion == nil, "missing or invalid selected next tag is an error")
+        let latestCatalog = EngineUpdateCatalog(packument: ["dist-tags": ["latest": "2.0.0", "next": "2.1.0", "alpha": "1.9.0"]], selectedChannel: .latest)
+        expect(latestCatalog.newerAlternatives(than: "2.0.0").map(\.channel) == [.next], "alternatives exclude selected and non-newer channels")
+        expect(latestCatalog.newerAlternativeMessage(than: "2.0.0")?.contains("候选版本（next） v2.1.0") == true, "up-to-date latest result names the newer next release")
+        expect(latestCatalog.newerAlternativeMessage(than: "2.0.0")?.contains("设置中选择对应更新通道") == true && latestCatalog.newerAlternativeMessage(than: "2.0.0")?.contains("不会自动切换或安装") == true, "alternate release message explains explicit selection without auto-install")
 
         // Guardian engine.json 指向的 .bin/dsh 符号链接应解析到真实引擎包。
         let fm = FileManager.default

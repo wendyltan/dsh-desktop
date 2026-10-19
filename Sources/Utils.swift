@@ -56,10 +56,14 @@ private func run(_ task: Process) -> ShellResult {
 }
 
 /// 同步 HTTP GET，返回 (JSON 对象, 错误信息)。用于 CLI 与后台线程。
-func httpGetJSON(_ urlString: String, headers: [String: String] = [:], timeout: TimeInterval = 25) -> (Any?, String?) {
+func httpGetJSON(_ urlString: String, headers: [String: String] = [:], timeout: TimeInterval = 25, bypassCache: Bool = false) -> (Any?, String?) {
     guard let url = URL(string: urlString) else { return (nil, "invalid url: \(urlString)") }
     var req = URLRequest(url: url)
     req.timeoutInterval = timeout
+    if bypassCache {
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+    }
     for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
     var out: (Any?, String?) = (nil, nil)
     let sem = DispatchSemaphore(value: 0)

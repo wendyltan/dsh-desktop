@@ -910,17 +910,17 @@ final class AppStore: NSObject, ObservableObject {
         settings.save()
         clearUpdateAvailability()
         updateMessage = "已切换到\(channel.title)，正在重新检查。不会自动安装引擎。"
-        checkUpdate()
+        checkUpdate(bypassCache: true)
     }
 
-    func checkUpdate(force: Bool = false) {
+    func checkUpdate(force: Bool = false, bypassCache: Bool = false) {
         if force { showClientPanel() }
         updateCheckGeneration += 1
         let generation = updateCheckGeneration
         let channel = settings.engineUpdateChannel
         DispatchQueue.global(qos: .utility).async {
             let installed = UpdateChecker.resolveInstalledEngine()
-            let (latest, err) = UpdateChecker.checkEngine(channel: channel)
+            let (catalog, err) = UpdateChecker.checkCatalog(channel: channel, bypassCache: force || bypassCache)
             DispatchQueue.main.async {
                 guard generation == self.updateCheckGeneration else { return }
                 guard let installed else {
@@ -929,7 +929,7 @@ final class AppStore: NSObject, ObservableObject {
                     if force { self.showUpdateAlert = true }
                     return
                 }
-                guard let latest = latest, err == nil else {
+                guard let catalog, let latest = catalog.selectedVersion, err == nil else {
                     self.clearUpdateAvailability()
                     self.updateMessage = "检查更新失败：\(err ?? "网络错误")"
                     if force { self.showUpdateAlert = true }
@@ -948,6 +948,9 @@ final class AppStore: NSObject, ObservableObject {
                     : "当前引擎为 \(installed)，没有比它更新的\(channel.title)引擎。"
                 if !newer, channel == .latest, installed.contains("-alpha") {
                     self.updateMessage += "\n\n当前 alpha 版本高于 latest；如需回到默认版本，请在“当前状态 → 管理引擎版本”中切换。"
+                }
+                if let alternatives = catalog.newerAlternativeMessage(than: installed) {
+                    self.updateMessage += "\n\n\(alternatives)"
                 }
                 if force { self.showUpdateAlert = true }
             }
@@ -1004,11 +1007,11 @@ final class AppStore: NSObject, ObservableObject {
                     self.updateAvailable = false
                     self.updateInstallAvailable = false
                     self.engineRetentionVersion = response?.fromVersion
-                    self.engineRetentionMandatory = updateChannel == .alpha && response?.fromVersion != nil
+                    self.engineRetentionMandatory = updateChannel.isPreview && response?.fromVersion != nil
                     self.updateMessage = "更新已完成：Harness 引擎已更新到 \(version)，并已确认可以正常使用。"
                     if let old = response?.fromVersion {
-                        if updateChannel == .alpha {
-                            self.updateMessage += "\n\n为保证 alpha 出现问题时可以回到默认版本，更新前的引擎 v\(old) 已保留且不能在此处删除。"
+                        if updateChannel.isPreview {
+                            self.updateMessage += "\n\n为保证\(updateChannel.title)出现问题时可以回退，更新前的引擎 v\(old) 已保留且不能在此处删除。"
                         } else {
                             self.updateMessage += "\n\n旧引擎 v\(old) 已暂时保留。建议保留以便需要时快速切回；系统最多保留两个旧版本。"
                         }

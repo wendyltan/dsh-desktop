@@ -37,7 +37,7 @@ const BASE = `http://${HOST}:${PORT}`
 const STARTUP_TIMEOUT_MS = 120_000
 const command = process.argv[2] ?? 'status'
 const wantsJson = process.argv.includes('--json')
-const GUARDIAN_VERSION = '0.6.0'
+const GUARDIAN_VERSION = '0.6.1'
 const PROTOCOL_VERSION = 3
 const CAPABILITIES = ['status', 'preflight', 'start', 'restart', 'update', 'rollback', 'engine-history', 'switch-engine', 'forget-engine-version', 'recover', 'safe-mode', 'watchdog', 'snapshot', 'recovery-snapshots', 'integrations', 'diff']
 const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml']
@@ -451,8 +451,10 @@ function validEngineVersion(value) {
 }
 
 function validReleaseChannel(value) {
-  return value === 'latest' || value === 'alpha'
+  return value === 'latest' || value === 'next' || value === 'alpha'
 }
+
+function isPreviewChannel(value) { return value === 'next' || value === 'alpha' }
 
 function inferredEngineChannel(version) {
   return typeof version === 'string' && /-alpha(?:[.-]|$)/.test(version) ? 'alpha' : 'latest'
@@ -485,8 +487,23 @@ function pruneEngineEntries(entries, keep = MAX_RETAINED_ENGINES) {
   return { retained, dropped }
 }
 
+function orderEngineHistory(entries, channel) {
+  if (!isPreviewChannel(channel)) return entries
+  const [predecessor, ...rest] = entries
+  return [
+    predecessor,
+    ...rest.filter((item) => item.channel === 'latest' && existsSync(item.active)),
+    ...rest.filter((item) => item.channel !== 'latest' || !existsSync(item.active)),
+  ].filter(Boolean)
+}
+
 function successfulEngineRestore(result, expectedVersion, actualVersion) {
   return result?.ok === true && result.mode !== 'safe' && actualVersion === expectedVersion
+}
+
+function latestRollbackEngine(current, history) {
+  if (!isPreviewChannel(current?.channel)) return null
+  return history.find((item) => item.channel === 'latest' && item.installed) ?? null
 }
 
 function removeManagedEngine(entry) {
@@ -508,8 +525,14 @@ function forgetEngineVersion(version) {
   const history = retainedEngines(selected)
   const removed = history.filter((item) => item.version === version)
   if (removed.length === 0) return { ok: true, removed: false, version }
+  if (isPreviewChannel(current?.channel) && removed.some((item) => item.version === history[0]?.version && item.channel !== 'latest')) {
+    return { ok: false, error: '预览版本使用期间必须保留直接回退版本' }
+  }
   if (current?.channel === 'alpha' && removed.some((item) => item.channel === 'latest')) {
     return { ok: false, error: '当前使用 alpha 时必须保留 latest 回退版本' }
+  }
+  if (current?.channel === 'next' && removed.some((item) => item.channel === 'latest')) {
+    return { ok: false, error: '当前使用 next 时必须保留 latest 回退版本' }
   }
   writeEngineSelection(current, history.filter((item) => item.version !== version))
   for (const item of removed) removeManagedEngine(item)
@@ -595,9 +618,7 @@ async function updateEngine(version, channel = null) {
     currentSelection ? { ...currentSelection, retainedAt: now() } : null,
     ...priorHistory,
   ], version)
-  const orderedHistory = targetChannel === 'alpha'
-    ? [...historyCandidates.filter((item) => item.channel === 'latest'), ...historyCandidates.filter((item) => item.channel !== 'latest')]
-    : historyCandidates
+  const orderedHistory = orderEngineHistory(historyCandidates, targetChannel)
   const planned = pruneEngineEntries(orderedHistory)
   writeEngineSelection({ ...next, channel: targetChannel }, planned.retained)
 
@@ -718,17 +739,17 @@ async function switchEngineVersion(version, { allowEngineRollback = false } = {}
   }
 }
 
-/** alpha 连续启动失败时，优先切回保留的 latest；只有没有可用基线或切回失败才交给安全模式。 */
-async function rollbackAlphaToLatest() {
+/** 预览版本连续启动失败时，优先切回保留的 latest；只有没有可用基线或切回失败才交给安全模式。 */
+async function rollbackPreviewToLatest() {
   const current = activeEngineSelection()
-  if (current?.channel !== 'alpha') return { attempted: false }
-  const stable = engineHistory().find((item) => item.channel === 'latest' && item.installed)
+  if (!isPreviewChannel(current?.channel)) return { attempted: false }
+  const stable = latestRollbackEngine(current, engineHistory())
   if (!stable) {
     return { attempted: false, error: '没有可用的 latest 回退版本' }
   }
   const switched = await switchEngineVersion(stable.version)
   if (switched.ok && (switched.switched || switched.alreadyCurrent)) {
-    appendEvent('engine-auto-rolled-back', `alpha 引擎启动连续失败，已自动回到 latest ${stable.version}。`, {
+    appendEvent('engine-auto-rolled-back', `${current.channel} 预览引擎启动连续失败，已自动回到 latest ${stable.version}。`, {
       fromVersion: current.version, toVersion: stable.version, scope: 'engine',
     })
     return { ...switched, attempted: true, autoRolledBack: true, action: 'engine-auto-rolled-back' }
@@ -737,8 +758,8 @@ async function rollbackAlphaToLatest() {
 }
 
 async function recoverProductionFailure(reason, allowEngineRollback = true) {
-  if (allowEngineRollback && activeEngineSelection()?.channel === 'alpha') {
-    const rollback = await rollbackAlphaToLatest()
+  if (allowEngineRollback && isPreviewChannel(activeEngineSelection()?.channel)) {
+    const rollback = await rollbackPreviewToLatest()
     if (rollback.autoRolledBack) return rollback
     return await startSafe(rollback.error ?? reason)
   }
@@ -1444,10 +1465,10 @@ async function watchdog() {
   if (existsSync(MAINTENANCE_FILE)) return { ok: true, action: 'maintenance' }
   assertOwnedProcesses(portListeners())
   if (await isUp()) return { ok: true, action: 'healthy' }
-  if (activeEngineSelection()?.channel === 'alpha') {
-    const rollback = await rollbackAlphaToLatest()
+  if (isPreviewChannel(activeEngineSelection()?.channel)) {
+    const rollback = await rollbackPreviewToLatest()
     if (rollback.autoRolledBack) return rollback
-    return await startSafe(rollback.error ?? 'alpha 引擎不可用，无法回退到 latest')
+    return await startSafe(rollback.error ?? '预览引擎不可用，无法回退到 latest')
   }
   const failures = (state().failures ?? []).filter((stamp) => Date.parse(stamp) > Date.now() - 10 * 60_000)
   if (failures.length >= 3) return await startSafe('crash-loop threshold reached')
@@ -1542,7 +1563,7 @@ async function main() {
       const channelIndex = process.argv.indexOf('--channel')
       const channel = channelIndex >= 0 ? process.argv[channelIndex + 1] : null
       if (channel !== null && !validReleaseChannel(channel)) {
-        return output({ ok: false, error: 'update requires --channel <latest|alpha>' })
+        return output({ ok: false, error: 'update requires --channel <latest|next|alpha>' })
       }
       writeFileSync(ENABLED_FILE, now() + '\n')
       rmSync(MAINTENANCE_FILE, { force: true })
@@ -1610,7 +1631,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 export {
   acquireLock, appendEvent, bootManifest, configDiff, copyProfileFiles, engineHistory, ensureSafeProfile,
   forgetEngineVersion, guardianIntegrations, previousEngine, recentEvents, recoverySnapshots,
-  health, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
+  health, latestRollbackEngine, orderEngineHistory, pruneEngineEntries, redactWebTokens, restoreLkg, snapshot, successfulEngineRestore,
   sessionRollbackCompatibility, sessionRestoreCompatibility, sessionFormatVersion, sessionPersistenceRoot, pluginCompatibility,
   preflight, releaseLock,
   switchEngineVersion, validateProfileFiles,

@@ -2,6 +2,7 @@ import Foundation
 
 enum EngineUpdateChannel: String, CaseIterable, Codable, Hashable, Identifiable {
     case latest
+    case next
     case alpha
 
     var id: String { rawValue }
@@ -9,14 +10,46 @@ enum EngineUpdateChannel: String, CaseIterable, Codable, Hashable, Identifiable 
     var title: String {
         switch self {
         case .latest: return "默认版本（latest）"
+        case .next: return "候选版本（next）"
         case .alpha: return "体验版本（alpha）"
         }
     }
     var explanation: String {
         switch self {
         case .latest: return "优先选择 npm 默认发布版本，适合日常稳定使用。"
+        case .next: return "候选版本，可能包含尚未稳定的更新；需要在设置中明确选择，并确认后才会安装。"
         case .alpha: return "包含预览中的新功能，可能出现兼容性问题；更新后会强制保留当前版本以便回退。"
         }
+    }
+
+    var isPreview: Bool { self != .latest }
+}
+
+struct EngineUpdateCatalog {
+    let versions: [EngineUpdateChannel: String]
+    let selectedChannel: EngineUpdateChannel
+
+    init(packument: Any?, selectedChannel: EngineUpdateChannel) {
+        self.selectedChannel = selectedChannel
+        versions = Dictionary(uniqueKeysWithValues: EngineUpdateChannel.allCases.compactMap { channel in
+            UpdateChecker.channelVersion(from: packument, channel: channel).map { (channel, $0) }
+        })
+    }
+
+    var selectedVersion: String? { versions[selectedChannel] }
+
+    func newerAlternatives(than installed: String) -> [(channel: EngineUpdateChannel, version: String)] {
+        EngineUpdateChannel.allCases.compactMap { channel in
+            guard channel != selectedChannel, let version = versions[channel], UpdateChecker.isNewer(version, than: installed) else { return nil }
+            return (channel, version)
+        }
+    }
+
+    func newerAlternativeMessage(than installed: String) -> String? {
+        let alternatives = newerAlternatives(than: installed)
+        guard !alternatives.isEmpty else { return nil }
+        let versions = alternatives.map { "\($0.channel.title) v\($0.version)" }.joined(separator: "、")
+        return "另有较新的\(versions)。如需使用，请在设置中选择对应更新通道并重新检查；不会自动切换或安装。"
     }
 }
 
@@ -84,16 +117,21 @@ enum UpdateChecker {
         return version
     }
 
-    /// 查询指定 npm 发布通道，返回 (版本号, 错误信息)。失败时 latest 为 nil。
-    static func checkEngine(channel: EngineUpdateChannel = .latest) -> (latest: String?, error: String?) {
-        let (json, err) = httpGetJSON(npmPackument,
-                                      headers: ["Accept": "application/json"],
-                                      timeout: 20)
+    /// 一次读取所有发布通道；手动检查可绕过本机 HTTP 缓存。
+    static func checkCatalog(channel: EngineUpdateChannel = .latest, bypassCache: Bool = false) -> (catalog: EngineUpdateCatalog?, error: String?) {
+        let (json, err) = httpGetJSON(npmPackument, headers: ["Accept": "application/json"], timeout: 20, bypassCache: bypassCache)
         guard err == nil else { return (nil, err) }
-        guard let latest = channelVersion(from: json, channel: channel) else {
+        let catalog = EngineUpdateCatalog(packument: json, selectedChannel: channel)
+        guard catalog.selectedVersion != nil else {
             return (nil, "npm 未返回\(channel.title)引擎版本")
         }
-        return (latest, nil)
+        return (catalog, nil)
+    }
+
+    /// 兼容原调用方，只返回被选中的发布通道。
+    static func checkEngine(channel: EngineUpdateChannel = .latest) -> (latest: String?, error: String?) {
+        let (catalog, error) = checkCatalog(channel: channel)
+        return (catalog?.selectedVersion, error)
     }
 
     static func channelVersion(from packument: Any?, channel: EngineUpdateChannel) -> String? {

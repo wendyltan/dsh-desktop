@@ -13,7 +13,7 @@ struct AppSettings: Codable {
     var quickPromptEffort: String? = nil      // 新会话默认力度：off/low/high/max（nil = 跟随引擎）
     var lastUpdateCheck: Date? = nil          // 上次检查更新的时间
     var dismissedUpdateVersion: String? = nil // 用户选择「以后再说」的引擎版本
-    var engineUpdateChannel: EngineUpdateChannel = .latest // 引擎更新通道：latest / alpha
+    var engineUpdateChannel: EngineUpdateChannel = .latest // 引擎更新通道：latest / next / alpha
 
     enum CodingKeys: String, CodingKey {
         case balanceRefreshSeconds, balanceWarningThreshold, showBalanceInMenuBar,
