@@ -1,6 +1,6 @@
 # DSH 安全启动链
 
-桌面保护组件运行在 `dsh web` 进程之外，避免修复工具随 DSH 一起崩溃。它与 dsh-desktop 一起发布，当前候选版本均为 `0.6.0`。
+桌面保护组件运行在 `dsh web` 进程之外，避免修复工具随 DSH 一起崩溃。它与 dsh-desktop 一起发布，当前源码版本均为 `0.6.1`。
 
 本目录是 Guardian 的唯一源码，随 dsh-desktop 构建和安装。`dsh-ops-console` 只是可选控制面板，通过 JSON 协议调用运行副本，不保存 Guardian 实现。
 
@@ -10,8 +10,8 @@
 2. 在临时 `DSH_HOME` 运行 `--dump-config`，捕获 YAML/patch 组合错误。
 3. 在随机临时端口启动完整 web profile，下载并验证全部 client bundle，并检查插件自行声明的 Guardian 健康端点。
 4. 通过后保存 last-known-good 运行配置快照，再切换正式 3080 服务。
-5. 正式启动失败时恢复运行配置快照；当前是 alpha 且重试仍失败时，先尝试切回已保留的 latest；回退失败或没有可用基线时才启动只含 base + web-app 的安全模式。
-6. launchd watchdog 每 60 秒检查一次。服务不可用时若当前是 alpha，优先尝试切回 latest；其他情况在 10 分钟内连续失败 3 次时进入安全模式，避免重启循环。
+5. 正式启动失败时恢复运行配置快照；当前是 next 或 alpha 且重试仍失败时，先尝试切回已保留的 latest；回退失败或没有可用基线时才启动只含 base + web-app 的安全模式。
+6. launchd watchdog 每 60 秒检查一次。服务不可用时若当前是 next 或 alpha，优先尝试切回 latest；其他情况在 10 分钟内连续失败 3 次时进入安全模式，避免重启循环。
 
 ## 常用命令
 
@@ -25,6 +25,7 @@ node ~/.dsh/guardian/guardian.mjs recover --snapshot current --json
 node ~/.dsh/guardian/guardian.mjs engine-history --json
 node ~/.dsh/guardian/guardian.mjs switch-engine --version 0.1.1-rc.2 --json
 node ~/.dsh/guardian/guardian.mjs update --version 0.1.2-alpha.3 --channel alpha --json
+node ~/.dsh/guardian/guardian.mjs update --version 0.2.1-rc.2 --channel next --json
 node ~/.dsh/guardian/guardian.mjs safe-mode --json
 ~/.dsh/dsh-desktop/stop.sh
 ~/.dsh/dsh-desktop/launch.sh
@@ -32,7 +33,9 @@ node ~/.dsh/guardian/guardian.mjs safe-mode --json
 
 手动 `stop.sh` 会关闭 watchdog；下一次 `launch.sh` 会重新启用。
 
-运行配置恢复与引擎版本切换是两套独立机制：前者恢复 Web profile 和受保护插件，不改变引擎；后者只切换 Harness 引擎。引擎更新后最多保留两个旧版本，alpha 更新会优先保留更新前的 latest；切换前必须通过隔离预检，启动失败则自动恢复当前版本。alpha 正式启动失败且重试仍失败时，会先尝试自动切回保留的 latest。
+运行配置恢复与引擎版本切换是两套独立机制：前者恢复 Web profile 和受保护插件，不改变引擎；后者只切换 Harness 引擎。支持 latest、next、alpha 三个明确通道；旧记录未标明通道时，rc 版本仍按 latest 兼容处理，不凭 rc 后缀猜测 next。
+
+引擎更新后最多保留两个旧版本。next 和 alpha 会保护更新前的引擎及可用的 latest 基线；使用预览通道时不能删除这两类受保护版本。切换前必须通过隔离预检，启动失败后的恢复和自动回退仍须通过会话格式检查。next 或 alpha 正式启动失败且重试仍失败时，会先尝试切回 latest；旧引擎无法读取当前会话格式时会阻止降级，保留原始会话数据。
 
 ## 可选插件集成
 

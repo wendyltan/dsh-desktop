@@ -57,19 +57,33 @@ struct DSHCtl {
                 }
             }
         case "update-check":
+            let channelIndex = args.firstIndex(of: "--channel")
+            let channel: EngineUpdateChannel
+            if let channelIndex {
+                guard channelIndex + 1 < args.count, let selected = EngineUpdateChannel(rawValue: args[channelIndex + 1]) else {
+                    print("ERROR: --channel must be latest, next, or alpha")
+                    exit(2)
+                }
+                channel = selected
+            } else {
+                channel = .latest
+            }
             guard let installed = UpdateChecker.resolveInstalledEngine() else {
                 print("ERROR: 未能识别当前运行的 Harness 引擎版本")
                 exit(1)
             }
-            let (latest, err) = UpdateChecker.checkEngine()
-            guard let latest = latest, err == nil else {
+            let (catalog, err) = UpdateChecker.checkCatalog(channel: channel, bypassCache: true)
+            guard let catalog, let latest = catalog.selectedVersion, err == nil else {
                 print("ERROR: 检查失败 \(err ?? "网络错误")")
                 exit(1)
             }
             let newer = UpdateChecker.isNewer(latest, than: installed)
             print("当前引擎: \(installed)")
-            print("npm 最新: \(latest)")
+            print("所选通道（\(channel.title)）: \(latest)")
             print(newer ? "→ 有新版本可用" : "→ 已是最新版本")
+            for alternative in catalog.newerAlternatives(than: installed) {
+                print("另有较新的\(alternative.channel.title): \(alternative.version)；如需使用请明确选择 --channel \(alternative.channel.rawValue)")
+            }
         default:
             print("""
             DeepSeek Harness 控制台 (dshctl)
@@ -77,7 +91,7 @@ struct DSHCtl {
             用法:
               dshctl status                查看服务状态
               dshctl balance               查看 API 余额/用量
-              dshctl update-check          检查 Harness 引擎更新
+              dshctl update-check [--channel latest|next|alpha]  检查 Harness 引擎更新
               dshctl guardian <status|preflight|restart|recover|safe-mode|capabilities|diff>
               dshctl native-metrics        查看不含敏感内容的原生控制面统计
               dshctl log                   查看服务日志

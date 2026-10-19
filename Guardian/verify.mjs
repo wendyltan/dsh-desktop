@@ -71,7 +71,7 @@ fs.symlinkSync(path.join(pkg, 'lib', 'bin.js'), path.join(prefix, 'node_modules'
 `)
   chmodSync(npmPath, 0o755)
   try {
-    const result = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'guardian.mjs'), 'update', '--version', '1.0.0', '--json'], {
+    const result = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'guardian.mjs'), 'update', '--version', '1.0.0', '--channel', 'next', '--json'], {
       encoding: 'utf8', env: {
         ...process.env,
         DSH_HOME: home,
@@ -429,6 +429,44 @@ guardian.releaseLock();`
   assert.equal(guardian.previousEngine()?.toVersion, '1.1.0')
   assert.equal(guardian.engineHistory()[0].installed, true)
   assert.equal(guardian.engineHistory()[0].channel, 'latest')
+  writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({
+    active: currentEngine, version: '1.2.0', channel: 'next',
+    history: [
+      { active: previousEngine, version: '1.1.0-alpha.1', channel: 'alpha', retainedAt: new Date().toISOString() },
+      { active: previousEngine, version: '1.0.0-rc.1', retainedAt: new Date().toISOString() },
+    ],
+  }))
+  assert.equal(guardian.engineHistory()[0].channel, 'alpha', 'next retains explicit predecessor channel')
+  assert.equal(guardian.engineHistory()[1].channel, 'latest', 'legacy rc history remains latest while next is active')
+  assert.equal(guardian.latestRollbackEngine({ channel: 'next' }, [
+    { channel: 'latest', version: '1.0.0', installed: true },
+  ]).version, '1.0.0', 'next recovery selects the retained latest baseline')
+  assert.equal(guardian.latestRollbackEngine({ channel: 'latest' }, [
+    { channel: 'latest', version: '1.0.0', installed: true },
+  ]), null, 'stable updates do not enter preview recovery')
+  const previewRetention = guardian.orderEngineHistory([
+    { active: previousEngine, version: '1.1.0-alpha.1', channel: 'alpha' },
+    { active: previousEngine, version: '1.0.0-rc.1', channel: 'latest' },
+    { active: previousEngine, version: '0.9.0', channel: 'latest' },
+  ], 'next')
+  const previewPlan = guardian.pruneEngineEntries(previewRetention)
+  assert.deepEqual(previewPlan.retained.map((item) => item.version), ['1.1.0-alpha.1', '1.0.0-rc.1'])
+  assert.equal(previewPlan.dropped[0].version, '0.9.0')
+  const availableBaseline = join(root, 'guardian', 'engines', '0.8.0', 'dsh')
+  mkdirSync(dirname(availableBaseline), { recursive: true })
+  writeFileSync(availableBaseline, '')
+  const orderedWithStaleBaseline = guardian.orderEngineHistory([
+    { active: previousEngine, version: '1.1.0-alpha.1', channel: 'alpha' },
+    { active: join(root, 'missing-latest', 'dsh'), version: '1.0.0', channel: 'latest' },
+    { active: availableBaseline, version: '0.8.0', channel: 'latest' },
+  ], 'next')
+  assert.deepEqual(guardian.pruneEngineEntries(orderedWithStaleBaseline).retained.map((item) => item.version), ['1.1.0-alpha.1', '0.8.0'])
+  assert.equal(guardian.forgetEngineVersion('1.1.0-alpha.1').error, '预览版本使用期间必须保留直接回退版本')
+  assert.equal(guardian.forgetEngineVersion('1.0.0-rc.1').error, '当前使用 next 时必须保留 latest 回退版本')
+  writeFileSync(join(root, 'guardian', 'engine.json'), JSON.stringify({
+    active: currentEngine, version: '1.2.0', channel: 'alpha',
+    history: [{ active: previousEngine, version: '1.1.0', channel: 'latest', retainedAt: new Date().toISOString() }],
+  }))
   const retention = guardian.pruneEngineEntries([
     { active: currentEngine, version: '1.2.0' },
     { active: previousEngine, version: '1.1.0' },

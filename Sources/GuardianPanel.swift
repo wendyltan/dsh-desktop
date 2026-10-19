@@ -675,6 +675,9 @@ private struct EngineVersionManager: View {
     @State private var pendingAction: EngineManagerAction?
 
     var body: some View {
+        let protectedPreviewVersions = Set((currentChannel == "alpha" || currentChannel == "next")
+            ? Array(versions.prefix(1).map(\.version) + versions.filter { $0.channel == "latest" }.map(\.version))
+            : [])
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("管理 Harness 引擎版本").font(.title2.weight(.semibold))
@@ -731,8 +734,8 @@ private struct EngineVersionManager: View {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.borderless)
-                            .disabled(currentChannel == "alpha" && version.channel == "latest")
-                            .help("不再保留这个版本")
+                            .disabled(protectedPreviewVersions.contains(version.version))
+                            .help(protectedPreviewVersions.contains(version.version) ? "预览版本期间必须保留直接回退版本和 latest 基线" : "不再保留这个版本")
                         }
                         .padding(12)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -741,7 +744,7 @@ private struct EngineVersionManager: View {
                 }
             }
 
-            Text("alpha 更新会保留更新前的 latest 版本；若 alpha 启动失败且重试仍失败，Guardian 会先尝试自动切回 latest，失败才进入安全模式。最多保留两个版本，通过预检后才允许切换。")
+            Text("alpha 和 next 更新会保留直接回退版本及可用的 latest 基线；启动连续失败时，Guardian 会先尝试切回 latest，失败才进入安全模式。最多保留两个版本，通过预检后才允许切换。")
                 .font(.caption).foregroundStyle(.secondary)
 
             HStack {
@@ -781,6 +784,7 @@ private struct EngineVersionManager: View {
 private func engineChannelSuffix(_ channel: String?) -> String {
     switch channel {
     case "alpha": return " · alpha"
+    case "next": return " · next"
     case "latest": return " · latest"
     default: return ""
     }
