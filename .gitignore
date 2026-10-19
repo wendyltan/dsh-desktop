@@ -4,11 +4,33 @@ bin/
 node_modules/
 cache/
 logs/
+.build/
+.swiftpm/
+DerivedData/
 
 # 本地用户数据（勿提交）
 settings.json
 native-metrics.json
 .test-home
+
+# 本地凭据；示例配置可正常提交
+.env
+.env.*
+!.env.example
+!.env.sample
+/secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# 隔离工作区与本机工具状态
+/.worktrees/
+/worktrees/
+/.superpowers/
+/.cache/
+/test-results/
+/tmp/
 
 # 系统文件
 .DS_Store
