@@ -45,6 +45,11 @@ struct DeepSeekHarnessApp: App {
                 Button("桌面端设置…") { store.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
             }
+            CommandGroup(replacing: .help) {
+                Button("使用说明（在线）…") {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/wendyltan/dsh-desktop#日常使用")!)
+                }
+            }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .toolbar) {
                 if Bundle.main.bundleIdentifier == "com.dsh.desktop.test" {
