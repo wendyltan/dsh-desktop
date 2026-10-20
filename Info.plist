@@ -6,6 +6,13 @@
     <string>DeepSeek Harness</string>
     <key>CFBundleDisplayName</key>
     <string>DeepSeek Harness</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh-Hans</string>
+        <string>en</string>
+    </array>
     <key>CFBundleIdentifier</key>
     <string>com.dsh.desktop</string>
     <key>CFBundleVersion</key>

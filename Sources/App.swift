@@ -22,7 +22,7 @@ struct DeepSeekHarnessApp: App {
         Window(ProcessInfo.processInfo.environment["DSH_DESKTOP_TEST"] == "1" ? "DeepSeek Harness Test" : "DeepSeek Harness", id: "client") {
             ContentView()
                 .environmentObject(store)
-                .frame(minWidth: 980, minHeight: 640)
+                .frame(minWidth: 760, minHeight: 560)
                 .onAppear {
                     store.ensureServerRunning()
                     store.startBalanceAutoRefresh()
