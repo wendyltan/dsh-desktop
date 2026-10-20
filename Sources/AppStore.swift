@@ -161,14 +161,9 @@ final class AppStore: NSObject, ObservableObject {
             button.toolTip = "DeepSeek Harness · 余额（点开查看菜单）"
         }
         let menu = NSMenu()
-        let version = NSMenuItem(title: "DeepSeek Harness v\(desktopVersion)", action: nil, keyEquivalent: "")
-        version.isEnabled = false
-        menu.addItem(version)
-        menu.addItem(.separator())
-        let pendingItem = NSMenuItem(title: "正在读取待处理事项…", action: nil, keyEquivalent: "")
-        pendingMenuItem = pendingItem
-        menu.addItem(pendingItem)
-        menu.addItem(.separator())
+        let open = NSMenuItem(title: "打开工作区", action: #selector(menuOpenHarness), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
         let ask = NSMenuItem(title: "快速提问…", action: #selector(menuQuickPrompt), keyEquivalent: "")
         ask.target = self
         menu.addItem(ask)
@@ -177,9 +172,11 @@ final class AppStore: NSObject, ObservableObject {
         lastSent.isEnabled = false
         lastSentSessionItem = lastSent
         menu.addItem(lastSent)
-        let open = NSMenuItem(title: "打开客户端窗口", action: #selector(menuOpenHarness), keyEquivalent: "")
-        open.target = self
-        menu.addItem(open)
+        menu.addItem(.separator())
+        let pendingItem = NSMenuItem(title: "正在读取待处理事项…", action: nil, keyEquivalent: "")
+        pendingMenuItem = pendingItem
+        menu.addItem(pendingItem)
+        menu.addItem(.separator())
         let status = NSMenuItem(title: "控制中心…", action: #selector(menuShowProtection), keyEquivalent: "")
         status.target = self
         menu.addItem(status)
@@ -189,6 +186,9 @@ final class AppStore: NSObject, ObservableObject {
         menu.addItem(check)
         updateMenuItem = check
         menu.addItem(.separator())
+        let version = NSMenuItem(title: "桌面端 v\(desktopVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
         let quit = NSMenuItem(title: "退出 DeepSeek Harness", action: #selector(menuQuit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
