@@ -62,6 +62,11 @@ struct GuardianEngineVersion: Decodable, Identifiable {
     var id: String { version }
 }
 
+struct GuardianEngineSelection: Decodable {
+    let version: String
+    let channel: String?
+}
+
 struct GuardianPluginIssue: Decodable, Identifiable {
     struct Dependency: Decodable, Identifiable {
         let name: String
@@ -87,6 +92,31 @@ struct GuardianPluginCompatibility: Decodable {
     let checked: Bool
     let issues: [GuardianPluginIssue]
 
+    static func isValidCurrentResult(
+        _ result: GuardianPluginCompatibility?,
+        activeEngine: String?,
+        responseEngine: String?,
+        error: String?
+    ) -> Bool {
+        guard error == nil, let activeEngine,
+              result?.checked == true, result?.scope == "current",
+              result?.engineVersion == activeEngine else { return false }
+        return responseEngine == nil || responseEngine == activeEngine
+    }
+
+    static func shouldLabelAsHistorical(
+        _ result: GuardianPluginCompatibility?,
+        activeEngine: String?,
+        retainedAfterRefresh: Bool
+    ) -> Bool {
+        retainedAfterRefresh && isValidCurrentResult(
+            result,
+            activeEngine: activeEngine,
+            responseEngine: nil,
+            error: nil
+        )
+    }
+
     static func prepareCurrentRefresh(candidate: inout GuardianPluginCompatibility?, requestRefresh: (Bool) -> Void) {
         candidate = nil
         requestRefresh(true)
@@ -107,6 +137,70 @@ struct GuardianPluginCompatibility: Decodable {
         case "candidate": return "建议在工作区管理这些插件，再决定是否继续使用候选引擎。"
         default: return "检查范围无法确认；建议在工作区核对这些插件后重新检查。"
         }
+    }
+}
+
+struct GuardianPluginRefreshState {
+    var historical: Bool
+    var error: String?
+
+    mutating func begin(hasCurrentRecord: Bool) {
+        historical = hasCurrentRecord
+        error = nil
+    }
+
+    mutating func finish(
+        deep: Bool,
+        result: GuardianPluginCompatibility?,
+        activeEngine: String?,
+        responseEngine: String?,
+        error refreshError: String?,
+        pluginCheck: Bool,
+        retainedPrevious: Bool,
+        engineChanged: Bool
+    ) {
+        let isFresh = GuardianPluginCompatibility.isValidCurrentResult(
+            result,
+            activeEngine: activeEngine,
+            responseEngine: responseEngine,
+            error: refreshError
+        )
+        if deep {
+            if isFresh {
+                historical = false
+                error = nil
+            } else {
+                historical = retainedPrevious
+                if pluginCheck {
+                    error = refreshError ?? "未能确认当前引擎的插件检查结果，请重试。"
+                }
+            }
+        } else if engineChanged {
+            historical = false
+        }
+        if engineChanged && !retainedPrevious { historical = false }
+    }
+}
+
+/// Coalesces overlapping deep refresh requests into one follow-up read.
+struct GuardianDeepRefreshQueue {
+    private(set) var inFlight = false
+    private var pending = false
+
+    mutating func request() -> Bool {
+        guard !inFlight else {
+            pending = true
+            return false
+        }
+        inFlight = true
+        return true
+    }
+
+    mutating func finishAndShouldFollowUp() -> Bool {
+        let shouldFollowUp = pending
+        pending = false
+        inFlight = false
+        return shouldFollowUp
     }
 }
 
@@ -151,13 +245,61 @@ struct GuardianResponse: Decodable {
     let update: GuardianUpdateState?
     let operation: GuardianOperationState?
     let previousVersion: String?
-    let engineHistory: [GuardianEngineVersion]?
-    let recoverySnapshots: [GuardianRecoverySnapshot]?
+    var engineHistory: [GuardianEngineVersion]?
+    var recoverySnapshots: [GuardianRecoverySnapshot]?
     let recentEvents: [GuardianEvent]?
 
-    mutating func retainPluginCompatibility(from previous: GuardianResponse?) {
-        guard pluginCompatibility == nil, let engine, engine == previous?.engine else { return }
-        pluginCompatibility = previous?.pluginCompatibility
+    @discardableResult
+    mutating func retainSameEngineDetailLists(
+        from previous: GuardianResponse?,
+        activeEngine: String?,
+        previousActiveEngine: String?
+    ) -> Bool {
+        guard let activeEngine,
+              engine == nil || engine == activeEngine,
+              (previous?.engine ?? previousActiveEngine) == activeEngine else { return false }
+        if engineHistory == nil { engineHistory = previous?.engineHistory }
+        if recoverySnapshots == nil { recoverySnapshots = previous?.recoverySnapshots }
+        return engineHistory != nil || recoverySnapshots != nil
+    }
+
+    @discardableResult
+    mutating func retainPluginCompatibility(from previous: GuardianResponse?, activeEngine: String?) -> Bool {
+        retainConfirmedCurrentPluginCompatibility(from: previous, activeEngine: activeEngine, error: nil)
+    }
+
+    /// Keeps only verified evidence for the still-active engine when a refresh is missing or invalid.
+    @discardableResult
+    mutating func retainConfirmedCurrentPluginCompatibility(
+        from previous: GuardianResponse?,
+        activeEngine: String?,
+        error: String?
+    ) -> Bool {
+        guard let activeEngine, engine == nil || engine == activeEngine else {
+            if pluginCompatibility?.scope != "candidate" { pluginCompatibility = nil }
+            return false
+        }
+        if GuardianPluginCompatibility.isValidCurrentResult(
+            pluginCompatibility,
+            activeEngine: activeEngine,
+            responseEngine: engine,
+            error: error
+        ) { return false }
+        guard pluginCompatibility?.scope != "candidate",
+              let previousCompatibility = previous?.pluginCompatibility,
+              GuardianPluginCompatibility.isValidCurrentResult(
+                previousCompatibility,
+                activeEngine: activeEngine,
+                responseEngine: previous?.engine,
+                error: nil
+              ) else {
+            if pluginCompatibility?.checked != true || pluginCompatibility?.scope != "candidate" {
+                pluginCompatibility = nil
+            }
+            return false
+        }
+        pluginCompatibility = previousCompatibility
+        return true
     }
 
     var effectiveMode: String { mode ?? state?.mode ?? "unknown" }
@@ -226,6 +368,10 @@ enum GuardianService {
               let previous = json["previous"] as? [String: Any],
               let version = previous["version"] as? String, !version.isEmpty else { return nil }
         return version
+    }
+
+    static func readEngineSelection() -> GuardianEngineSelection? {
+        readJSON(engineStateFile, as: GuardianEngineSelection.self)
     }
 
     /// 读 events.log（JSONL），取最近 N 条事件。

@@ -64,6 +64,43 @@ struct GuardianPanel: View {
     private var pluginCompatibility: GuardianPluginCompatibility? {
         store.candidatePluginCompatibility ?? response?.pluginCompatibility
     }
+    private var currentPluginCompatibility: GuardianPluginCompatibility? {
+        guard let result = response?.pluginCompatibility,
+              result.scope == "current", result.checked,
+              result.engineVersion == store.resolvedEngine else { return nil }
+        return result
+    }
+    private var currentEngineChannel: String? {
+        store.activeEngineSelection?.channel ?? response?.engineChannel
+    }
+    private var currentPluginCheckLabel: String {
+        guard let compatibility = currentPluginCompatibility else {
+            return store.pluginCompatibilityChecking ? "正在检查当前引擎插件兼容性" : "当前引擎插件兼容性尚未确认"
+        }
+        let date = formatGuardianDate(compatibility.checkedAt)
+        return GuardianPluginCompatibility.shouldLabelAsHistorical(
+            compatibility,
+            activeEngine: store.resolvedEngine,
+            retainedAfterRefresh: store.pluginCompatibilityHistorical
+        )
+            ? "上次有效插件检查 · \(date)"
+            : "插件检查 · \(date)"
+    }
+    @ViewBuilder private var pluginCheckErrorDetails: some View {
+        if let error = store.pluginCompatibilityError {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("检查未完成，可重试。")
+                    .font(.caption).foregroundStyle(.orange)
+                DisclosureGroup("技术详情") {
+                    Text(error)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption)
+            }
+        }
+    }
     private var guardianColor: Color {
         if isRecovering { return .deepseekBlue }
         if isSafeMode { return .orange }
@@ -187,15 +224,51 @@ struct GuardianPanel: View {
                 }
             }
             if isRecovering { progressCard }
-            if let error = store.guardianError, !error.isEmpty, !isRecovering {
-                Text("还没完全恢复。请查看「恢复与版本」中的诊断信息，或重新尝试恢复。")
-                    .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 7) {
+                Label("Harness 引擎 \(store.resolvedEngine.map { "v\($0)" } ?? "未识别")\(engineChannelSuffix(currentEngineChannel))", systemImage: "cpu")
+                    .font(.callout.weight(.medium))
+                HStack {
+                    Label(currentPluginCheckLabel, systemImage: currentPluginCompatibility == nil ? "puzzlepiece.extension" : "checkmark.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("查看") { controller.selectedSection = .plugins }
+                        .buttonStyle(.link)
+                }
+                if let issue = currentPluginCompatibility?.issues.first(where: { $0.enabled && !$0.confirmedMismatches.isEmpty }) {
+                    HStack {
+                        Text("\(issue.id) 有已确认的依赖版本冲突。")
+                            .font(.caption).foregroundStyle(.orange)
+                        Spacer()
+                        Button("在工作区核对") { store.openPluginManager() }
+                            .buttonStyle(.link).disabled(!isRunning)
+                    }
+                } else if let issue = currentPluginCompatibility?.issues.first(where: { $0.enabled && !$0.unresolvedFindings.isEmpty }) {
+                    HStack {
+                        Text("\(issue.id) 有依赖状态无法确认；这不代表不兼容。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("在工作区核对") { store.openPluginManager() }
+                            .buttonStyle(.link).disabled(!isRunning)
+                    }
+                }
+                if let error = store.guardianError, !error.isEmpty, !isRecovering {
+                    Text("还没完全恢复。请查看「恢复与版本」中的诊断信息，或重新尝试恢复。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
 
     private var pluginsPane: some View {
         VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Button(store.pluginCompatibilityChecking ? "正在检查当前引擎…" : (store.pluginCompatibilityError == nil ? "检查当前引擎" : "重试检查")) {
+                    store.recheckCurrentEnginePluginCompatibility()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.pluginCompatibilityChecking || store.guardianDeepRefreshInFlight || store.guardianBusy || store.updateBusy)
+            }
+            pluginCheckErrorDetails
             if let compatibility = pluginCompatibility {
                 let enabled = compatibility.issues.filter(\.enabled)
                 let mismatched = compatibility.checked ? enabled.filter { !$0.confirmedMismatches.isEmpty } : []
@@ -207,6 +280,12 @@ struct GuardianPanel: View {
                         Text("引擎版本：\(compatibility.engineVersion ?? "未识别")")
                         Text("检查时间：\(formatGuardianDate(compatibility.checkedAt))")
                             .font(.caption).foregroundStyle(.secondary)
+                        if currentPluginCompatibility != nil && store.pluginCompatibilityHistorical {
+                            Text(store.pluginCompatibilityChecking
+                                 ? "正在重新检查；下方结果是上次有效记录。"
+                                 : "本次检查未完成；下方结果是上次有效记录。")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                         if compatibility.scope == "candidate" {
                             Text("这是候选引擎的预检结果；当前运行服务保持原状态。")
                                 .font(.callout).foregroundStyle(.secondary)
@@ -214,14 +293,12 @@ struct GuardianPanel: View {
                             Text("无法确认这组结果对应的引擎范围，不应据此判断当前服务是否兼容。")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
-                        if compatibility.scope == "candidate" {
-                            Button("重新检查当前引擎") { store.recheckCurrentEnginePluginCompatibility() }
-                                .buttonStyle(.bordered)
-                        }
                         if !compatibility.checked {
                             Text("这次无法确认插件兼容状态。建议在工作区核对插件状态。")
                                 .font(.callout).foregroundStyle(.orange)
                         } else if !mismatched.isEmpty {
+                            Text("以下已启用插件存在确认的依赖版本冲突，可能无法按预期工作。")
+                                .font(.callout).foregroundStyle(.orange)
                             Text(compatibility.mismatchRecommendation ?? "建议在工作区管理这些已启用插件。")
                                 .font(.callout).foregroundStyle(.orange)
                             Text(mismatched.map(\.id).joined(separator: "、"))
@@ -248,12 +325,14 @@ struct GuardianPanel: View {
                 }
             } else {
                 card {
-                    Label("尚无插件兼容检查结果", systemImage: "puzzlepiece.extension")
-                        .font(.callout).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(store.pluginCompatibilityChecking ? "正在检查当前引擎" : "尚无插件兼容检查结果", systemImage: "puzzlepiece.extension")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                 }
             }
             Button("在工作区管理插件") { store.openPluginManager() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .disabled(!isRunning)
             Text("插件启用、停用和安装仍由 Harness 工作区管理。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -317,12 +396,38 @@ struct GuardianPanel: View {
                 componentRow(
                     icon: "cpu",
                     title: "Harness 引擎",
-                    value: store.resolvedEngine.map { "v\($0)" } ?? "未识别",
+                    value: "\(store.resolvedEngine.map { "v\($0)" } ?? "未识别")\(engineChannelSuffix(currentEngineChannel))",
                     detail: "负责会话和 Web 服务，可单独管理版本"
                 )
                 HStack {
                     Spacer()
                     Button("管理引擎版本…") { activeSheet = .engines }
+                }
+                Divider()
+                Label("引擎更新", systemImage: "arrow.down.circle").font(.headline)
+                Picker("更新通道", selection: Binding(
+                    get: { store.settings.engineUpdateChannel },
+                    set: { store.updateEngineChannel($0) }
+                )) {
+                    ForEach(EngineUpdateChannel.allCases) { channel in
+                        Text(channel.title).tag(channel)
+                    }
+                }
+                .disabled(store.updateBusy)
+                Text(store.settings.engineUpdateChannel.explanation)
+                    .font(.caption).foregroundStyle(.secondary)
+                if store.updateBusy {
+                    ProgressView(value: store.updateProgressPercent.map(Double.init), total: 100)
+                    Text(store.updateMessage).font(.caption).foregroundStyle(.secondary)
+                } else if !store.updateMessage.isEmpty {
+                    Text(store.updateMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                HStack {
+                    Text("切换通道只重新检查；安装前仍会执行预检并请求确认。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("立即检查") { store.checkUpdate(force: true) }
+                        .disabled(store.updateBusy)
                 }
             }
         }
@@ -395,7 +500,13 @@ struct GuardianPanel: View {
                 technicalRow("当前模式", technicalMode)
                 technicalRow("上次成功", compactDate(response?.state?.lastSuccess))
                 if let operation = response?.operation {
-                    technicalRow("最近操作", "\(operation.command ?? "—") · \(operation.phase ?? "—")")
+                    technicalRow("最近操作", "\(operationLabel(operation.command)) · \(operationPhase(operation.phase))")
+                    DisclosureGroup("查看原始操作详情") {
+                        Text("command=\(operation.command ?? "—") · phase=\(operation.phase ?? "—") · updatedAt=\(operation.updatedAt ?? "—")")
+                            .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.caption)
                 }
                 if let error = store.guardianError ?? response?.state?.lastError, !error.isEmpty {
                     Text("诊断信息").font(.caption).foregroundStyle(.secondary)
@@ -484,7 +595,7 @@ struct GuardianPanel: View {
         content()
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.62), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1))
     }
 
@@ -527,6 +638,29 @@ struct GuardianPanel: View {
         return nil
     }
 
+    private func operationLabel(_ value: String?) -> String {
+        switch value {
+        case "restart": return "重新启动服务"
+        case "preflight": return "验证启动完整性"
+        case "recover": return "恢复运行配置"
+        case "update": return "更新 Harness 引擎"
+        case "switch-engine": return "切换 Harness 引擎"
+        case "forget-engine-version": return "清理已保留引擎"
+        case "status": return "检查服务状态"
+        default: return value ?? "未知操作"
+        }
+    }
+
+    private func operationPhase(_ value: String?) -> String {
+        switch value {
+        case "running", "preparing", "downloading", "preflight", "restarting": return "进行中"
+        case "completed": return "已完成"
+        case "failed": return "未完成"
+        case "rolled-back": return "已回退"
+        default: return value ?? "状态未知"
+        }
+    }
+
     private var technicalMode: String {
         switch response?.effectiveMode {
         case "production": return "常规运行"
@@ -547,7 +681,15 @@ struct GuardianPanel: View {
 
     private func compactDate(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "—" }
-        return value.replacingOccurrences(of: "T", with: " ").replacingOccurrences(of: "Z", with: "")
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallback = ISO8601DateFormatter()
+        guard let date = iso.date(from: value) ?? fallback.date(from: value) else { return value }
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
@@ -621,6 +763,9 @@ private struct ConfigurationRecoverySheet: View {
                             ))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(selectedId == snapshot.id ? .isSelected : [])
+                        .accessibilityLabel("\(snapshot.id == "current" ? "最近验证的配置" : "上一份配置")，\(formatGuardianDate(snapshot.createdAt))，\(snapshot.changed ? "与当前相比有 \(snapshot.diffTotal) 项变化" : "与当前运行配置一致")\(selectedId == snapshot.id ? "，已选择" : "")")
                     }
                 }
             }
@@ -728,6 +873,7 @@ private struct EngineVersionManager: View {
                             Spacer()
                             Button("切换") { pendingAction = .switchTo(version.version) }
                                 .disabled(!version.installed || store.guardianBusy)
+                                .accessibilityLabel("切换到 Harness 引擎版本 \(version.version)")
                             Button {
                                 pendingAction = .forget(version.version)
                             } label: {
@@ -735,6 +881,7 @@ private struct EngineVersionManager: View {
                             }
                             .buttonStyle(.borderless)
                             .disabled(protectedPreviewVersions.contains(version.version))
+                            .accessibilityLabel("不再保留 Harness 引擎版本 \(version.version)")
                             .help(protectedPreviewVersions.contains(version.version) ? "预览版本期间必须保留直接回退版本和 latest 基线" : "不再保留这个版本")
                         }
                         .padding(12)
@@ -800,7 +947,7 @@ private func formatGuardianDate(_ value: String?) -> String {
     }
     let formatter = DateFormatter()
     formatter.locale = .current
-    formatter.dateStyle = .medium
+    formatter.dateStyle = .short
     formatter.timeStyle = .short
     return formatter.string(from: date)
 }

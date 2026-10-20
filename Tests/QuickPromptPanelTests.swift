@@ -35,6 +35,11 @@ struct QuickPromptPanelTests {
         let panel = QuickPromptPanelController()
         let first = BridgeSession(sessionId: "one", title: "One", cwd: "/one", live: true)
         let second = BridgeSession(sessionId: "two", title: "Two", cwd: "/two", live: true)
+        let filteredSessions = QuickPromptModel.filteredSessions(
+            [first, second], query: "one", selectedSessionId: second.sessionId
+        )
+        expect(filteredSessions.map(\.sessionId) == [first.sessionId, second.sessionId],
+               "session filtering keeps the selected target available when it does not match")
         var openedSessionId: String?
         let completionModel = QuickPromptModel()
         let submittedText = "提问 A"

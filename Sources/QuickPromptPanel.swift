@@ -25,6 +25,22 @@ final class QuickPromptModel: ObservableObject {
     @Published var newSessionDirectory = NSHomeDirectory()
     private var modelRequestGeneration = 0
 
+    static func filteredSessions(_ sessions: [BridgeSession], query: String, selectedSessionId: String?) -> [BridgeSession] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return sessions }
+        var result = sessions.filter {
+            $0.title.localizedStandardContains(needle)
+                || $0.cwd.localizedStandardContains(needle)
+                || $0.sessionId.localizedStandardContains(needle)
+        }
+        if let selectedSessionId,
+           let selected = sessions.first(where: { $0.sessionId == selectedSessionId }),
+           !result.contains(where: { $0.sessionId == selectedSessionId }) {
+            result.append(selected)
+        }
+        return result
+    }
+
     func beginModelLoad() -> Int {
         modelRequestGeneration += 1
         modelsLoading = true
@@ -78,11 +94,16 @@ struct QuickPromptView: View {
     var onModelChange: ((String?) -> Void)? = nil
     var onEffortChange: ((String?) -> Void)? = nil
     @FocusState private var focused: Bool
+    @State private var showNewSessionOptions = false
+    @State private var sessionSearch = ""
 
     private var isExistingSession: Bool { model.mode == "existing" }
     private var canTargetSession: Bool {
         !model.sessionsLoading && model.sessionsError == nil && !model.sessions.isEmpty
             && model.sessions.contains(where: { $0.sessionId == model.selectedSessionId })
+    }
+    private var visibleSessions: [BridgeSession] {
+        QuickPromptModel.filteredSessions(model.sessions, query: sessionSearch, selectedSessionId: model.selectedSessionId)
     }
 
     func sessionLabel(for session: BridgeSession, among sessions: [BridgeSession]) -> String {
@@ -109,21 +130,12 @@ struct QuickPromptView: View {
     }
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color.deepseekBlue.opacity(0.08), Color.clear],
-                startPoint: .topLeading,
-                endPoint: .center
-            )
-            .ignoresSafeArea()
-
+        ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 12) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(Color.deepseekBlue, in: RoundedRectangle(cornerRadius: 10))
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.secondary)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("快速提问")
@@ -138,17 +150,11 @@ struct QuickPromptView: View {
                     Label(model.connected ? "已连接" : "尚未连接", systemImage: model.connected ? "checkmark.circle.fill" : "wifi.slash")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(model.connected ? Color.green : Color.secondary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(.regularMaterial, in: Capsule())
 
                     if !model.modeHint.isEmpty {
                         Text(model.modeHint)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(.regularMaterial, in: Capsule())
                     }
                 }
 
@@ -211,15 +217,23 @@ struct QuickPromptView: View {
                             Label("没有可用会话", systemImage: "tray")
                                 .foregroundStyle(.secondary)
                         } else {
+                            if model.sessions.count > 8 {
+                                TextField("搜索会话名称、目录或编号", text: $sessionSearch)
+                                    .textFieldStyle(.roundedBorder)
+                                    .accessibilityHint("筛选不会更改当前选择")
+                            }
                             Picker("目标会话", selection: $model.selectedSessionId) {
                                 Text("选择会话").tag(String?.none)
-                                ForEach(model.sessions) { session in
+                                ForEach(visibleSessions) { session in
                                     Text(sessionLabel(for: session, among: model.sessions))
-                                    .tag(Optional(session.sessionId))
+                                        .tag(Optional(session.sessionId))
                                 }
                             }
                             .disabled(model.sending)
+                            .accessibilityHint("搜索只筛选列表，不会更改当前选择")
                             if let session = model.sessions.first(where: { $0.sessionId == model.selectedSessionId }) {
+                                Label("目标目录", systemImage: "folder")
+                                    .font(.caption.weight(.medium))
                                 Text(session.cwd.isEmpty ? "目录未知" : session.cwd)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -231,48 +245,62 @@ struct QuickPromptView: View {
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Text("新会话目录").foregroundStyle(.secondary)
-                            TextField("绝对路径", text: $model.newSessionDirectory).textFieldStyle(.roundedBorder)
-                            Button("选择…") {
-                                let panel = NSOpenPanel()
-                                panel.canChooseFiles = false
-                                panel.canChooseDirectories = true
-                                panel.allowsMultipleSelection = false
-                                panel.directoryURL = URL(fileURLWithPath: model.newSessionDirectory, isDirectory: true)
-                                if panel.runModal() == .OK, let url = panel.url { model.newSessionDirectory = url.path }
-                            }
+                        HStack {
+                            Label("新会话目录", systemImage: "folder")
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            Text(model.newSessionDirectory)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(model.newSessionDirectory)
                         }
-                        HStack(spacing: 8) {
-                            Picker("新会话模型", selection: Binding(
-                                get: { [model.selectedProvider, model.selectedModel].compactMap { $0 }.joined(separator: ":") },
-                                set: { value in
-                                    let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
-                                    model.selectedProvider = parts.count == 2 ? parts[0] : nil
-                                    model.selectedModel = parts.count == 2 ? parts[1] : nil
-                                    onModelChange?(model.selectedModel == nil ? nil : value)
+                        DisclosureGroup("目录、模型与力度", isExpanded: $showNewSessionOptions) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    TextField("新会话目录", text: $model.newSessionDirectory).textFieldStyle(.roundedBorder)
+                                    Button("选择…") {
+                                        let panel = NSOpenPanel()
+                                        panel.canChooseFiles = false
+                                        panel.canChooseDirectories = true
+                                        panel.allowsMultipleSelection = false
+                                        panel.directoryURL = URL(fileURLWithPath: model.newSessionDirectory, isDirectory: true)
+                                        if panel.runModal() == .OK, let url = panel.url { model.newSessionDirectory = url.path }
+                                    }
                                 }
-                            )) {
-                                Text("默认模型").tag("")
-                                ForEach(model.models) { item in Text(item.name).tag(item.id) }
-                            }
-                            Picker("新会话力度", selection: Binding(
-                                get: { model.effort ?? "" },
-                                set: { model.effort = $0.isEmpty ? nil : $0; onEffortChange?(model.effort) }
-                            )) {
-                                Text("默认力度").tag("")
-                                Text("不思考").tag("off")
-                                Text("轻度思考").tag("low")
-                                Text("充分思考").tag("high")
-                                Text("最大力度").tag("max")
-                            }
-                        }
-                        if model.modelsLoading {
-                            Label("正在加载模型…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
-                        } else if let error = model.modelsError {
-                            HStack {
-                                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
-                                Button("重试", action: { onRetryModels?() }).disabled(onRetryModels == nil)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Picker("新会话模型", selection: Binding(
+                                        get: { [model.selectedProvider, model.selectedModel].compactMap { $0 }.joined(separator: ":") },
+                                        set: { value in
+                                            let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+                                            model.selectedProvider = parts.count == 2 ? parts[0] : nil
+                                            model.selectedModel = parts.count == 2 ? parts[1] : nil
+                                            onModelChange?(model.selectedModel == nil ? nil : value)
+                                        }
+                                    )) {
+                                        Text("默认模型").tag("")
+                                        ForEach(model.models) { item in Text(item.name).tag(item.id) }
+                                    }
+                                    Picker("新会话力度", selection: Binding(
+                                        get: { model.effort ?? "" },
+                                        set: { model.effort = $0.isEmpty ? nil : $0; onEffortChange?(model.effort) }
+                                    )) {
+                                        Text("默认力度").tag("")
+                                        Text("不思考").tag("off")
+                                        Text("轻度思考").tag("low")
+                                        Text("充分思考").tag("high")
+                                        Text("最大力度").tag("max")
+                                    }
+                                }
+                                if model.modelsLoading {
+                                    Label("正在加载模型…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
+                                } else if let error = model.modelsError {
+                                    HStack {
+                                        Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                                        Button("重试", action: { onRetryModels?() }).disabled(onRetryModels == nil)
+                                    }
+                                }
                             }
                         }
                     }
@@ -338,7 +366,7 @@ struct QuickPromptView: View {
             }
             .padding(20)
         }
-        .frame(width: 680, height: 560)
+        .frame(minWidth: 680, idealWidth: 680, minHeight: 560, idealHeight: 560)
         .onAppear { focused = true }
         .onReceive(model.$selectedSessionId.dropFirst()) { sessionChanged($0) }
         .onExitCommand(perform: close)
@@ -459,12 +487,13 @@ final class QuickPromptPanelController: NSObject, NSWindowDelegate {
 
     private func makePanel() {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
-                            styleMask: [.titled, .closable, .fullSizeContentView],
+                            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                             backing: .buffered, defer: false)
         panel.title = "DeepSeek Harness · 快速提问"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
+        panel.minSize = NSSize(width: 620, height: 480)
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self

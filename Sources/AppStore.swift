@@ -7,12 +7,19 @@ final class AppStore: NSObject, ObservableObject {
     @Published var reloadToken = 0
     @Published var guardianStatus: GuardianResponse?
     @Published var candidatePluginCompatibility: GuardianPluginCompatibility?
+    @Published var pluginCompatibilityChecking = false
+    @Published var pluginCompatibilityError: String?
+    @Published var pluginCompatibilityHistorical = false
+    @Published var activeEngineSelection: GuardianEngineSelection?
     @Published var guardianBusy = false
     @Published var guardianMessage = ""
     @Published var guardianError: String?
     @Published var guardianDiff: GuardianDiffResponse?
     @Published var guardianDiffError: String?
     private var guardianTimer: Timer?
+    private var guardianRefreshGeneration = 0
+    private var guardianDeepRefreshQueue = GuardianDeepRefreshQueue()
+    @Published private(set) var guardianDeepRefreshInFlight = false
 
     @Published var bridgeStatus = "事件桥尚未启动"
     @Published var pendingSessionId: String?
@@ -36,7 +43,7 @@ final class AppStore: NSObject, ObservableObject {
     private var lastNetworkChange = Date.distantPast
 
     /// 引擎/保护组件版本：优先取最近一次完整 status，否则回退到缓存（deep 刷新时更新）。
-    var resolvedEngine: String? { guardianStatus?.engine ?? lastEngine }
+    var resolvedEngine: String? { guardianStatus?.engine ?? activeEngineSelection?.version ?? lastEngine }
     var resolvedGuardianVersion: String? { guardianStatus?.guardianVersion ?? lastGuardianVersion }
 
     @Published var balance: BalanceInfo?
@@ -757,9 +764,22 @@ final class AppStore: NSObject, ObservableObject {
 
     /// 刷新保护组件状态。deep=false 走轻量路径：只读落盘 JSON + 回环探活，
     /// 不 spawn node、不做全树 diff；deep=true 额外跑完整 status 与 diff（按需）。
-    func refreshGuardian(deep: Bool = false) {
+    func refreshGuardian(deep: Bool = false, pluginCheck: Bool = false) {
+        if deep {
+            guard guardianDeepRefreshQueue.request() else {
+                guardianRefreshGeneration += 1
+                guardianDeepRefreshInFlight = true
+                return
+            }
+            guardianDeepRefreshInFlight = true
+        } else if guardianDeepRefreshInFlight {
+            return
+        }
+        guardianRefreshGeneration += 1
+        let generation = guardianRefreshGeneration
         DispatchQueue.global(qos: .utility).async {
             var response = GuardianService.lightStatus()
+            let engineSelection = GuardianService.readEngineSelection()
             var error: String?
             var diff: GuardianDiffResponse?
             var diffError: String?
@@ -774,17 +794,71 @@ final class AppStore: NSObject, ObservableObject {
                 }
             }
             DispatchQueue.main.async {
-                if GuardianResponse.shouldRetryGuardianStatusDeep(deep: deep, status: self.guardianStatus, error: self.guardianError) {
+                guard generation == self.guardianRefreshGeneration else {
+                    if deep {
+                        if pluginCheck {
+                            self.pluginCompatibilityChecking = false
+                            self.pluginCompatibilityError = "本次检查已由更新的状态刷新接替，请重新检查。"
+                        }
+                        let followUp = self.guardianDeepRefreshQueue.finishAndShouldFollowUp()
+                        self.guardianDeepRefreshInFlight = false
+                        if followUp { self.refreshGuardian(deep: true) }
+                    }
+                    return
+                }
+                if !pluginCheck && GuardianResponse.shouldRetryGuardianStatusDeep(deep: deep, status: self.guardianStatus, error: error ?? self.guardianError) {
+                    _ = self.guardianDeepRefreshQueue.finishAndShouldFollowUp()
+                    self.guardianDeepRefreshInFlight = false
                     self.refreshGuardian(deep: true)
                     return
                 }
-                if !deep { response.retainPluginCompatibility(from: self.guardianStatus) }
+                let freshCompatibility = response.pluginCompatibility
+                response.retainSameEngineDetailLists(
+                    from: self.guardianStatus,
+                    activeEngine: engineSelection?.version ?? response.engine,
+                    previousActiveEngine: self.activeEngineSelection?.version ?? self.guardianStatus?.engine
+                )
+                let retainedCompatibility = response.retainConfirmedCurrentPluginCompatibility(
+                    from: self.guardianStatus,
+                    activeEngine: engineSelection?.version ?? response.engine,
+                    error: error
+                )
+                let previousActiveEngine = self.activeEngineSelection?.version ?? self.guardianStatus?.engine
+                let activeEngine = engineSelection?.version ?? response.engine
+                var pluginRefreshState = GuardianPluginRefreshState(
+                    historical: self.pluginCompatibilityHistorical,
+                    error: self.pluginCompatibilityError
+                )
+                pluginRefreshState.finish(
+                    deep: deep,
+                    result: freshCompatibility,
+                    activeEngine: activeEngine,
+                    responseEngine: response.engine,
+                    error: error,
+                    pluginCheck: pluginCheck,
+                    retainedPrevious: retainedCompatibility,
+                    engineChanged: previousActiveEngine != nil && activeEngine != nil && previousActiveEngine != activeEngine
+                )
+                if pluginCheck {
+                    self.pluginCompatibilityChecking = false
+                }
+                self.pluginCompatibilityError = pluginRefreshState.error
+                self.pluginCompatibilityHistorical = pluginRefreshState.historical
                 self.guardianStatus = response
                 self.guardianError = error
                 self.guardianDiff = diff
                 self.guardianDiffError = diffError
+                self.activeEngineSelection = engineSelection
                 if let engine = response.engine { self.lastEngine = engine }
                 if let version = response.guardianVersion { self.lastGuardianVersion = version }
+                if deep {
+                    let followUp = self.guardianDeepRefreshQueue.finishAndShouldFollowUp()
+                    self.guardianDeepRefreshInFlight = false
+                    if followUp {
+                        self.refreshGuardian(deep: true)
+                        return
+                    }
+                }
                 let mode = response.effectiveMode
                 if let previous = self.lastGuardianMode, mode != previous, mode == "recovered" || mode == "safe" {
                     self.metrics.record(mode == "safe" ? .guardianSafeMode : .guardianAutoRecovered,
@@ -804,9 +878,19 @@ final class AppStore: NSObject, ObservableObject {
     }
 
     func recheckCurrentEnginePluginCompatibility() {
-        GuardianPluginCompatibility.prepareCurrentRefresh(candidate: &candidatePluginCompatibility) { deep in
-            self.refreshGuardian(deep: deep)
-        }
+        guard !pluginCompatibilityChecking, !guardianDeepRefreshInFlight, !guardianBusy, !updateBusy else { return }
+        pluginCompatibilityChecking = true
+        var pluginRefreshState = GuardianPluginRefreshState(historical: pluginCompatibilityHistorical, error: pluginCompatibilityError)
+        pluginRefreshState.begin(hasCurrentRecord: GuardianPluginCompatibility.isValidCurrentResult(
+            guardianStatus?.pluginCompatibility,
+            activeEngine: resolvedEngine,
+            responseEngine: guardianStatus?.engine,
+            error: nil
+        ))
+        pluginCompatibilityHistorical = pluginRefreshState.historical
+        pluginCompatibilityError = pluginRefreshState.error
+        candidatePluginCompatibility = nil
+        refreshGuardian(deep: true, pluginCheck: true)
     }
 
     private func runGuardian(_ command: String, args: [String] = [], success: String, reloadWeb: Bool = false) {

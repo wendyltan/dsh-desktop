@@ -100,27 +100,27 @@ struct SettingsView: View {
                     Text("新会话（推荐）").tag("new")
                     Text("继续已有会话").tag("existing")
                 }
-                Picker("新会话模型", selection: Binding(
-                    get: { promptModelId },
-                    set: { applyModel($0) }
-                )) {
-                    Text("默认（跟随引擎）").tag("")
-                    ForEach(store.quickPromptModels) { model in
-                        Text(model.name).tag(model.id)
+                if usesNewSession {
+                    Picker("新会话模型", selection: Binding(
+                        get: { promptModelId },
+                        set: { applyModel($0) }
+                    )) {
+                        Text("默认（跟随引擎）").tag("")
+                        ForEach(store.quickPromptModels) { model in
+                            Text(model.name).tag(model.id)
+                        }
+                    }
+                    Picker("新会话力度", selection: Binding(
+                        get: { promptEffort },
+                        set: { promptEffort = $0; store.updateQuickPromptEffort($0.isEmpty ? nil : $0) }
+                    )) {
+                        Text("跟随引擎（默认深入）").tag("")
+                        Text("直接回答 · 不思考").tag("off")
+                        Text("快速 · 轻度思考").tag("low")
+                        Text("深入 · 充分思考").tag("high")
+                        Text("最强 · 最大力度").tag("max")
                     }
                 }
-                .disabled(!usesNewSession)
-                Picker("新会话力度", selection: Binding(
-                    get: { promptEffort },
-                    set: { promptEffort = $0; store.updateQuickPromptEffort($0.isEmpty ? nil : $0) }
-                )) {
-                    Text("跟随引擎（默认深入）").tag("")
-                    Text("直接回答 · 不思考").tag("off")
-                    Text("快速 · 轻度思考").tag("low")
-                    Text("深入 · 充分思考").tag("high")
-                    Text("最强 · 最大力度").tag("max")
-                }
-                .disabled(!usesNewSession)
                 HStack {
                     if usesNewSession, store.quickPromptModelsLoading {
                         Label("正在加载模型…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
@@ -138,7 +138,7 @@ struct SettingsView: View {
                     }
                 }
             } header: {
-                Label("快速提问", systemImage: "sparkles")
+                Label("快速提问", systemImage: "text.bubble")
             }
             Section {
                 Toggle("在菜单栏显示余额", isOn: Binding(
@@ -160,33 +160,13 @@ struct SettingsView: View {
                     ), format: .number)
                         .frame(width: 90)
                         .multilineTextAlignment(.trailing)
+                        .accessibilityLabel("余额预警阈值")
+                        .accessibilityValue("\(threshold.formatted()) 元")
                 }
                 Text("余额低于阈值时，菜单栏数字会变红并发送一次提醒。")
                     .font(.caption).foregroundStyle(.secondary)
             } header: {
                 Label("余额提醒", systemImage: "creditcard")
-            }
-            Section {
-                Picker("更新通道", selection: Binding(
-                    get: { store.settings.engineUpdateChannel },
-                    set: { store.updateEngineChannel($0) }
-                )) {
-                    ForEach(EngineUpdateChannel.allCases) { channel in
-                        Text(channel.title).tag(channel)
-                    }
-                }
-                .disabled(store.updateBusy)
-                Text(store.settings.engineUpdateChannel.explanation)
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Text("切换通道后只重新检查，不会自动安装引擎。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("立即检查") { store.checkUpdate(force: true) }
-                        .disabled(store.updateBusy)
-                }
-            } header: {
-                Label("引擎更新", systemImage: "arrow.down.circle")
             }
         }
         .formStyle(.grouped)
