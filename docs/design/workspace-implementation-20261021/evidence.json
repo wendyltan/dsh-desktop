@@ -6,7 +6,7 @@
   "source": "HarnessBridge/client/client.js",
   "sourceSHA256": "8be5000cc827fcd10e9c1878a92a99f096a5ecd001440ca2341e3dcc74c1f445",
   "syntheticContentOnly": true,
-  "humanAccepted": false,
+  "humanAccepted": true,
   "captures": {
     "light-desktop.png": [1280, 822],
     "dark-desktop.png": [1280, 822],
