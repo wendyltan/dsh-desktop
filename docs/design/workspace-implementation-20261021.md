@@ -66,3 +66,5 @@ GIT：`master` 上实施检查点 `d58dfef`，补色与证据为 `571ce21`／`fi
 重新登记应用及更新时间后用户仍报告旧 DS；之后只重载 Dock、重开原生 App，没有再次重启引擎或退出其他业务应用。UI 读屏无法直接读取 Dock（超时），因此 Dock 实际显示仍待用户确认，不凭文件哈希宣布已修复。未清空系统图标缓存或删除用户 Dock 固定项。新旧构建的 CFBundleVersion 同为 0.6.1，记录为潜在线索而非已证实根因。
 
 正式截图仅留在忽略的 `bin/production-theme-*20261021*`；可能包含真实会话标题的本机检查图不进公开 Git。当前不再重复安装或重启服务。NEXT：确认重开后的 Dock 图标；如仍旧，先核对图标资源身份／缓存链路，再讨论最小的构建元数据调整，不继续盲清缓存。
+
+最新只读定位：用户在 Dock／App 重开后仍报告旧 DS。解析 Dock 固定项的实际 bookmark 得到 `/Applications/DeepSeek Harness.app`，但 `bookmarkDataIsStale=true`；LaunchServices 注册路径和运行中进程路径均为该正式 App。运行中 `NSRunningApplication.icon` 也渲染出新版鲸鱼，与文件图标服务一致。因此先处理“旧 Dock 固定项”这一显示边界，不改程序图标资源或构建版本。Dock 读屏不可用，本机无现成 dockutil；不为此安装工具或直接重写整个 Dock 偏好。NEXT：与用户确认仅重建此固定项，保留原位置和其他图标；实际显示仍以用户为准。
