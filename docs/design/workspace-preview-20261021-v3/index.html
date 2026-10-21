@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工作区提案 · DeepSeek Harness Desktop</title>
+  <link rel="stylesheet" href="preview.css">
+</head>
+<body>
+  <p class="preview-note">静态设计预览 · 示例内容为虚构，不会发送或连接服务</p>
+  <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-trace" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/><circle cx="18" cy="15" r="3"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m4 11 16-7-7 16-2.5-6.5L4 11Z"/><path d="m10.5 13.5 4-4"/></symbol>
+    <symbol id="i-attach" viewBox="0 0 24 24"><path d="m8.5 12.5 6.8-6.8a3.2 3.2 0 0 1 4.5 4.5l-8.7 8.7a5 5 0 0 1-7.1-7.1l8-8"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M8 7V3m8 4V3M6 7h12v4a6 6 0 0 1-6 6v4m-4-9h8"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H10l2 2h7.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11Z"/></symbol>
+    <symbol id="i-shield-edit" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 2.8 7.8 7 10 4.2-2.2 7-5.5 7-10V6l-7-3Z"/><path d="m9 14.7.5-2.3 4.8-4.8a1.4 1.4 0 0 1 2 2l-4.8 4.8-2.5.3Z"/></symbol>
+    <symbol id="i-up-arrow" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  </svg>
+  <main class="window" aria-label="DeepSeek Harness 工作区设计预览">
+    <header class="window-chrome" aria-label="macOS 窗口标题栏">
+      <div class="traffic-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span>DeepSeek Harness</span>
+      <span></span>
+    </header>
+    <div class="workspace-layout">
+      <aside class="sidebar">
+        <div class="brand-row"><img src="dsh-logo.svg" alt="" class="whale"><span>DeepSeek Harness</span><button type="button" class="icon-button collapse" aria-label="收起侧栏"><svg><use href="#i-panel"/></svg></button></div>
+        <button type="button" class="workspace-select"><span class="workspace-mark"><svg><use href="#i-folder"/></svg></span><span class="workspace-name"><b>工具维护</b><small>个人工作区</small></span><svg class="tiny"><use href="#i-chev"/></svg></button>
+        <div class="side-actions"><button type="button" class="action"><svg><use href="#i-plus"/></svg>新建会话</button><button type="button" class="action search"><svg><use href="#i-search"/></svg>搜索会话</button></div>
+        <nav class="sessions" aria-label="会话列表">
+          <p class="nav-heading">最近</p>
+          <button type="button" class="session active"><span class="session-title">梳理本地工具的维护流程</span><small>刚刚</small></button>
+          <button type="button" class="session"><span class="session-title">整理发布前检查清单</span><small>昨天</small></button>
+          <button type="button" class="session"><span class="session-title">给日志摘要补上示例</span><small>周一</small></button>
+          <p class="nav-heading earlier">更早</p>
+          <button type="button" class="session"><span class="session-title">比较两种备份策略</span><small>10月 16日</small></button>
+          <button type="button" class="session"><span class="session-title">查找配置文件的位置</span><small>10月 14日</small></button>
+        </nav>
+        <footer class="side-footer">
+          <button type="button" class="footer-link"><svg><use href="#i-plug"/></svg><span>插件管理</span></button>
+          <button type="button" class="footer-link"><svg><use href="#i-folder"/></svg><span>工作区设置</span></button>
+        </footer>
+      </aside>
+      <section class="main-pane">
+        <header class="topbar">
+          <div class="crumb"><button type="button" class="icon-button mobile-menu" aria-label="打开会话列表"><svg><use href="#i-panel"/></svg></button><span class="crumb-workspace">工具维护</span><svg class="tiny"><use href="#i-chev"/></svg><h1>梳理本地工具的维护流程</h1></div>
+          <div class="top-actions"><button type="button" class="quiet-button trace"><svg><use href="#i-trace"/></svg>执行轨迹</button><button type="button" class="icon-button" aria-label="更多会话操作"><svg><use href="#i-more"/></svg></button></div>
+        </header>
+        <div class="conversation">
+          <div class="messages">
+            <div class="conversation-note"><span>虚构会话，仅供设计评审</span><span>今天，10:42</span></div>
+            <article class="user-message"><p>帮我把本地工具的维护事项整理成每月检查流程，重点关注备份、更新和恢复验证。</p></article>
+            <article class="assistant-message">
+              <div class="assistant-label"><img src="dsh-logo.svg" alt="" class="assistant-whale"><b>DeepSeek</b></div>
+              <p>建议每月按“先确认能恢复，再决定是否更新”的顺序检查，最后记录结果。这样可以先保障回退条件，再处理版本变化。</p>
+              <h2>每月维护流程</h2>
+              <div class="steps">
+                <div class="step"><span class="step-number">1</span><div><h3>核对备份</h3><p>确认配置快照时间与内容范围，并检查会话目录可读。发现缺失时先补齐备份。</p></div></div>
+                <div class="step"><span class="step-number">2</span><div><h3>检查更新</h3><p>记录当前引擎版本和通道，查看插件兼容结果；更新前保留可用回退版本。</p></div></div>
+                <div class="step"><span class="step-number">3</span><div><h3>验证恢复</h3><p>在测试环境恢复快照，确认配置可读、工作区能打开，并记录验证日期与结果。</p></div></div>
+              </div>
+              <p class="closing">“备份完成”说明有副本；“恢复成功”才说明副本可用。</p>
+              <div class="answer-tools"><button type="button">复制</button></div>
+            </article>
+          </div>
+        </div>
+        <form class="composer" aria-label="撰写消息">
+          <label class="sr-only" for="draft">撰写消息</label>
+          <textarea id="draft" placeholder="继续这段对话…"></textarea>
+          <div class="composer-row">
+            <div class="composer-left">
+              <button type="button" class="attach-button" aria-label="添加文件或调用指令（预览中不可用）" disabled><svg><use href="#i-plus"/></svg></button>
+              <button type="button" class="permission-button" aria-disabled="true" aria-label="访问权限：工作区内修改（静态预览，不可操作）" title="静态设计预览，权限菜单尚未接入"><svg><use href="#i-shield-edit"/></svg><span>工作区内修改</span><svg class="tiny"><use href="#i-chev"/></svg></button>
+            </div>
+            <div class="composer-right">
+              <button type="button" class="model-button" aria-disabled="true" aria-label="模型 DeepSeek-V41-Flash，思考力度 High（静态预览，不可操作）" title="静态设计预览，模型与力度菜单尚未接入"><span>DeepSeek-V41-Flash</span><span class="effort">High</span><svg class="tiny"><use href="#i-chev"/></svg></button>
+              <button type="button" class="send-button" aria-label="发送消息（预览中不可用）" disabled><svg><use href="#i-up-arrow"/></svg></button>
+            </div>
+          </div>
+        </form>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
