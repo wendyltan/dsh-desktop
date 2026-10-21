@@ -35,6 +35,10 @@ node HarnessBridge/verify.mjs
 node --test HarnessBridge/test/client-navigation.test.mjs
 node Scripts/verify-install-bridge.mjs
 
+echo "== 程序图标渲染验证 =="
+swiftc -parse-as-library -module-cache-path "$ROOT/bin/bin-cache" Tests/AppIconTests.swift -o bin/app-icon-tests
+bin/app-icon-tests
+
 echo "== 原生事件桥验证 =="
 swiftc -module-cache-path "$ROOT/bin/bin-cache" -swift-version 5 \
   Sources/EventBridge.swift Bridge/Verify.swift -framework Network -o bin/bridge-tests

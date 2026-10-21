@@ -1,7 +1,7 @@
 window.__ModuleLoader__.load({
   id: 'dsh-desktop-bridge',
   factory: () => {
-    const inject = ['uiWorkspace', 'sessions', 'layout']
+    const inject = ['uiWorkspace', 'sessions', 'layout', 'theme']
     const name = 'dsh-desktop-bridge'
 
     function apply(ctx) {
@@ -90,6 +90,22 @@ window.__ModuleLoader__.load({
           disposePending?.('客户端页面已关闭，任务定位未完成。')
         }
       }, 'dsh-desktop-bridge: session navigation')
+
+      ctx.effect(() => {
+        if (!window.webkit?.messageHandlers?.dshDesktopOpenSession) return
+        return ctx.theme.overrideTokens(name, {
+          '--dsw-alias-bg-base': { light: '#FFFFFF', dark: '#1E293B' },
+          '--dsw-alias-bg-layer-1': { light: '#F5F7FF', dark: '#263449' },
+          '--dsw-alias-bg-layer-2': { light: '#EAF0FF', dark: '#33435C' },
+          '--dsw-alias-bg-overlay': { light: '#FFFFFF', dark: '#2D3B52' },
+          '--dsw-alias-border-l1': { light: '#D9E1F2', dark: '#3D4D66' },
+          '--dsw-alias-border-l2': { light: '#BCCBE6', dark: '#51627D' },
+          '--dsw-alias-brand-primary': { light: '#4162EA', dark: '#9BAEFF' },
+          '--dsw-alias-label-primary': { light: '#1F2A44', dark: '#F1F5FF' },
+          '--dsw-alias-label-secondary': { light: '#596981', dark: '#C2CDE0' },
+          '--dsw-specific-sidebar-fill': { light: '#F3F6FF', dark: '#222F45' },
+        })
+      }, 'dsh-desktop-bridge: workspace appearance')
     }
 
     return { apply, inject, name }

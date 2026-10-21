@@ -5,18 +5,21 @@ import vm from 'node:vm'
 
 const bundle = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 
-function fixture({ openSession = (id, sessions) => { sessions.select(id) }, selectPanel = () => {}, phase = 'ready' } = {}) {
+function fixture({ openSession = (id, sessions) => { sessions.select(id) }, selectPanel = () => {}, phase = 'ready', native = true } = {}) {
   const messages = []
   const panelMessages = []
+  const themeOverrides = []
+  const themeDisposals = []
   const listeners = new Map()
   const timers = new Map()
   let nextTimer = 0
-  let teardown
+  let preferenceWrites = 0
+  const teardowns = []
   const window = {
-    webkit: { messageHandlers: {
+    webkit: native ? { messageHandlers: {
       dshDesktopOpenSession: { postMessage: (message) => messages.push(message) },
       dshDesktopOpenPanel: { postMessage: (message) => panelMessages.push(message) },
-    } },
+    } } : undefined,
     __ModuleLoader__: { load: (registration) => { window.__ModuleLoader__.registered = registration } },
     addEventListener: (name, callback) => listeners.set(name, callback),
     removeEventListener: (name) => listeners.delete(name),
@@ -51,18 +54,62 @@ function fixture({ openSession = (id, sessions) => { sessions.select(id) }, sele
   const ctx = {
     uiWorkspace: { openSession: (id) => openSession(id, sessions) },
     layout: { selectPanel },
+    theme: {
+      overrideTokens(source, tokens) {
+        themeOverrides.push({ source, tokens })
+        return () => themeDisposals.push(source)
+      },
+      setTheme() { preferenceWrites += 1 },
+    },
     sessions,
-    effect(callback) { teardown = callback() },
+    effect(callback) { teardowns.push(callback()) },
   }
   plugin.apply(ctx)
   return {
-    messages, panelMessages, timers, sessions, window,
+    messages, panelMessages, themeOverrides, themeDisposals, preferenceWrites: () => preferenceWrites, timers, sessions, window,
     open(sessionId) { window.dispatchEvent({ type: 'dsh-desktop-open-session', detail: { sessionId } }) },
     openPanel(panelId, attemptId) { window.dispatchEvent({ type: 'dsh-desktop-open-panel', detail: { panelId, attemptId } }) },
     expire() { for (const callback of timers.values()) callback() },
-    close() { teardown?.() },
+    close() { for (const teardown of teardowns) teardown?.() },
   }
 }
+
+function contrast(foreground, background) {
+  const luminance = (color) => {
+    const channels = color.slice(1).match(/../gu).map((channel) => parseInt(channel, 16) / 255)
+    const [r, g, b] = channels.map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+  const [high, low] = [luminance(foreground), luminance(background)].sort((a, b) => b - a)
+  return (high + 0.05) / (low + 0.05)
+}
+
+test('applies the approved light and dark palettes only through the native theme runtime', () => {
+  const page = fixture()
+  assert.equal(page.themeOverrides.length, 1)
+  const { source, tokens } = page.themeOverrides[0]
+  assert.equal(source, 'dsh-desktop-bridge')
+  assert.equal(tokens['--dsw-alias-bg-base'].light, '#FFFFFF')
+  assert.equal(tokens['--dsw-alias-bg-base'].dark, '#1E293B')
+  assert.equal(tokens['--dsw-specific-sidebar-fill'].light, '#F3F6FF')
+  assert.equal(tokens['--dsw-specific-sidebar-fill'].dark, '#222F45')
+  for (const mode of ['light', 'dark']) {
+    assert.ok(contrast(tokens['--dsw-alias-label-primary'][mode], tokens['--dsw-alias-bg-base'][mode]) >= 4.5)
+    assert.ok(contrast(tokens['--dsw-alias-label-secondary'][mode], tokens['--dsw-alias-bg-layer-1'][mode]) >= 4.5)
+  }
+  assert.equal(Object.keys(tokens).some((token) => /state-(error|warn|success)/u.test(token)), false)
+  assert.equal(page.preferenceWrites(), 0)
+  page.close()
+  assert.deepEqual(page.themeDisposals, ['dsh-desktop-bridge'])
+})
+
+test('does not apply the native theme override in an ordinary browser', () => {
+  const page = fixture({ native: false })
+  assert.deepEqual(page.themeOverrides, [])
+  assert.equal(page.preferenceWrites(), 0)
+  page.close()
+  assert.deepEqual(page.themeDisposals, [])
+})
 
 test('acknowledges only after the official workspace navigation selects the requested session', () => {
   const page = fixture()
