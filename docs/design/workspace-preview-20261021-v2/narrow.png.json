@@ -1,0 +1,10 @@
+{
+  "kind": "local-ui-mockup-screenshot",
+  "version": 2,
+  "source": "index.html + preview.css",
+  "method": "Viewport browser screenshot of static draft; full-page capture was unreliable",
+  "viewport": { "width": 760, "height": 880 },
+  "image": { "width": 760, "height": 880 },
+  "date": "2026-10-21",
+  "approved": false
+}

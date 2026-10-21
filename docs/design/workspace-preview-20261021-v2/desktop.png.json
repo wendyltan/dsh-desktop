@@ -1,0 +1,10 @@
+{
+  "kind": "local-ui-mockup-screenshot",
+  "version": 2,
+  "source": "index.html + preview.css",
+  "method": "Full-page browser render of static draft; no generated image editing",
+  "viewport": { "width": 1280, "height": 720 },
+  "image": { "width": 1280, "height": 857 },
+  "date": "2026-10-21",
+  "approved": false
+}
