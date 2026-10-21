@@ -1,0 +1,10 @@
+{
+  "kind": "local-ui-mockup-screenshot",
+  "source": "index.html + preview.css",
+  "method": "Browser rendering of the independent static mockup, full-page capture",
+  "viewport": { "width": 1280, "height": 720 },
+  "image": { "width": 1280, "height": 857 },
+  "date": "2026-10-21",
+  "content": "Synthetic example, no live model call or private session data",
+  "approved": false
+}
