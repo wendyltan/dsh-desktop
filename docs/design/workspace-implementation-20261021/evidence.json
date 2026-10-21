@@ -1,0 +1,18 @@
+{
+  "kind": "native-isolated-runtime-evidence",
+  "date": "2026-10-21",
+  "app": "DeepSeek Harness Test",
+  "method": "native app capture via computer-use API",
+  "source": "HarnessBridge/client/client.js",
+  "sourceSHA256": "8be5000cc827fcd10e9c1878a92a99f096a5ecd001440ca2341e3dcc74c1f445",
+  "syntheticContentOnly": true,
+  "humanAccepted": false,
+  "captures": {
+    "light-desktop.png": [1280, 822],
+    "dark-desktop.png": [1280, 822],
+    "light-narrow.png": [760, 822],
+    "dark-settings.png": [1280, 822],
+    "input-ready.png": [1280, 822]
+  },
+  "iconPreview": {"file": "app-icon.png", "size": [192, 192], "source": "Scripts/gen-icon.swift", "method": "downsampled local build artifact"}
+}

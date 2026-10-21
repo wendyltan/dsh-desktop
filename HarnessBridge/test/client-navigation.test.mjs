@@ -111,6 +111,28 @@ test('does not apply the native theme override in an ordinary browser', () => {
   assert.deepEqual(page.themeDisposals, [])
 })
 
+test('keeps input, selection and action states legible in both palette modes', () => {
+  const { tokens } = fixture().themeOverrides[0]
+  for (const mode of ['light', 'dark']) {
+    for (const surface of ['--dsw-specific-input-major', '--dsw-specific-bubble', '--dsw-specific-sidebar-nav-item-active', '--dsw-alias-bg-module-platform', '--dsw-alias-interactive-bg-hover']) {
+      assert.ok(tokens[surface]?.[mode], `${surface} must have a ${mode} value`)
+      for (const label of ['--dsw-alias-label-primary', '--dsw-alias-label-secondary', '--dsw-alias-label-tertiary']) {
+        assert.ok(contrast(tokens[label][mode], tokens[surface][mode]) >= 4.5, `${label} on ${surface} in ${mode}`)
+      }
+    }
+    for (const action of ['--dsw-alias-button-info-fill', '--dsw-alias-button-info-hover']) {
+      assert.ok(tokens[action]?.[mode], `${action} must have a ${mode} value`)
+      assert.ok(contrast('#FFFFFF', tokens[action][mode]) >= 4.5, `white action content on ${action} in ${mode}`)
+    }
+    assert.ok(tokens['--dsw-alias-button-primary-hover']?.[mode])
+    assert.ok(contrast(tokens['--dsw-alias-button-info-fill'][mode], tokens['--dsw-specific-sidebar-nav-item-active-accent'][mode]) >= 4.5, 'question badges pair info text with the accent surface')
+    assert.ok(tokens['--dsw-alias-label-caption']?.[mode], 'the native composer placeholder needs a paired caption color')
+    assert.ok(contrast(tokens['--dsw-alias-label-caption'][mode], tokens['--dsw-specific-input-major'][mode]) >= 4.5)
+    const foreground = mode === 'dark' ? '#0F1115' : '#FFFFFF'
+    assert.ok(contrast(foreground, tokens['--dsw-alias-button-primary-hover'][mode]) >= 4.5)
+  }
+})
+
 test('acknowledges only after the official workspace navigation selects the requested session', () => {
   const page = fixture()
   assert.equal(page.messages[0].ready, true)

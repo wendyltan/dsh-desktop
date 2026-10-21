@@ -98,12 +98,23 @@ window.__ModuleLoader__.load({
           '--dsw-alias-bg-layer-1': { light: '#F5F7FF', dark: '#263449' },
           '--dsw-alias-bg-layer-2': { light: '#EAF0FF', dark: '#33435C' },
           '--dsw-alias-bg-overlay': { light: '#FFFFFF', dark: '#2D3B52' },
+          '--dsw-alias-bg-module-platform': { light: '#F3F6FD', dark: '#33435C' },
           '--dsw-alias-border-l1': { light: '#D9E1F2', dark: '#3D4D66' },
           '--dsw-alias-border-l2': { light: '#BCCBE6', dark: '#51627D' },
           '--dsw-alias-brand-primary': { light: '#4162EA', dark: '#9BAEFF' },
+          '--dsw-alias-button-primary-hover': { light: '#3554D4', dark: '#B1BFFF' },
+          '--dsw-alias-button-info-fill': { light: '#4162EA', dark: '#4162EA' },
+          '--dsw-alias-button-info-hover': { light: '#3554D4', dark: '#3554D4' },
+          '--dsw-alias-interactive-bg-hover': { light: '#E7EDF8', dark: '#3D4D66' },
           '--dsw-alias-label-primary': { light: '#1F2A44', dark: '#F1F5FF' },
           '--dsw-alias-label-secondary': { light: '#596981', dark: '#C2CDE0' },
+          '--dsw-alias-label-tertiary': { light: '#586780', dark: '#B9C7DD' },
+          '--dsw-alias-label-caption': { light: '#586780', dark: '#B9C7DD' },
           '--dsw-specific-sidebar-fill': { light: '#F3F6FF', dark: '#222F45' },
+          '--dsw-specific-sidebar-nav-item-active': { light: '#DEE7FF', dark: '#33435C' },
+          '--dsw-specific-sidebar-nav-item-active-accent': { light: '#F1F5FF', dark: '#F1F5FF' },
+          '--dsw-specific-input-major': { light: '#F2F5FB', dark: '#263449' },
+          '--dsw-specific-bubble': { light: '#EAF0FF', dark: '#33435C' },
         })
       }, 'dsh-desktop-bridge: workspace appearance')
     }
