@@ -22,4 +22,3 @@ svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke
 @media(max-width:700px){body{padding:0;gap:0}.preview-note{align-self:flex-start;margin:7px 10px}.window{height:800px;min-height:800px;border-radius:8px;width:100%}.topbar{height:60px;padding:0 10px;gap:8px}.crumb{gap:6px}.crumb h1{font-size:16px}.trace{font-size:0;width:34px;padding:0;justify-content:center}.trace svg{width:18px;height:18px}.messages{padding:14px 17px 10px}.user-message{max-width:92%}.composer{width:calc(100% - 20px);margin:7px auto 10px;padding:10px}.composer-row{gap:8px}}
 @media(max-width:430px){.messages{padding-left:13px;padding-right:13px}.conversation-note{font-size:11px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
-
